@@ -132,3 +132,14 @@ input::placeholder { color: #3e4146; }
 .actions { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+.grow { flex: 1; min-width: 0; }
+.sub { display: flex; align-items: center; gap: 7px; }
+.live { width: 7px; height: 7px; border-radius: 50%; background: #3a3d41; flex: none; }
+.live.on { background: var(--ok); box-shadow: 0 0 10px rgba(84, 232, 112, 0.7); }
+.seg { display: grid; grid-template-columns: 1fr 1fr; width: 100%; padding: 4px; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; margin-top: 4px; }
+.seg button { background: transparent; color: var(--muted); padding: 10px; border-radius: 999px; font-size: 14px; }
+.seg button.on { background: var(--raised); color: var(--text); }
+.bignum { font-size: 24px; letter-spacing: 0.08em; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--ok); user-select: text; }
+.setup { overflow-y: auto; padding-bottom: 24px; }
+.card input { text-align: left; }

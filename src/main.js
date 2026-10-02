@@ -1,36 +1,41 @@
-import qrcode from "qrcode-generator";
-import { generateKeypair, supportsX25519 } from "./keys.js";
 import * as api from "./api.js";
 import { createWave } from "./wave.js";
 import { icons } from "./icons.js";
 import { native } from "./native.js";
+import { supportsKeys } from "./csr.js";
 import "./style.css";
 
 const app = document.getElementById("app");
 const wave = createWave();
+const sameOrigin = !native && /^https?:$/.test(location.protocol);
 
 const s = {
   tab: "main",
+  mode: "signin",
   server: "",
   account: "",
+  password: "",
+  confirm: "",
   profile: null,
   devices: [],
+  limit: 5,
   status: "off",
   since: 0,
   rx: 0,
-  tx: 0,
   down: 0,
-  up: 0,
   error: "",
   busy: false,
   sheet: null,
   reveal: false,
+  created: "",
+  signedIn: false,
 };
 
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const group = (v) => v.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
 const raw = () => s.account.replace(/\s/g, "");
 const pad = (n) => String(n).padStart(2, "0");
+const fmtDate = (t) => new Date(t * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 
 function clock(ms) {
   const t = Math.max(0, Math.floor(ms / 1000));
@@ -52,13 +57,6 @@ function el(html) {
   const t = document.createElement("template");
   t.innerHTML = html.trim();
   return t.content.firstElementChild;
-}
-
-function qrSvg(text) {
-  const qr = qrcode(0, "L");
-  qr.addData(text);
-  qr.make();
-  return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
 
 function titlebar() {
@@ -94,7 +92,7 @@ function mainView() {
         <div><span class="k">Speed</span><span class="v"><i class="dot">${icons.bolt}</i><b id="speed">${bytes(s.down)}/s</b></span></div>
       </div>
       ${pill}
-      <p class="hint">${on ? "Your internet is private." : native ? "Your traffic is not encrypted." : "Browser mode creates a config for the WireGuard app."}</p>
+      <p class="hint">${on ? "Your internet is private." : native ? "Your traffic is not encrypted." : "Create an OpenVPN profile for any device."}</p>
       <p class="error" role="alert">${esc(s.error)}</p>
       <button class="server" data-tab="settings">
         <span class="flag">${esc((api.serverHost() || "?")[0].toUpperCase())}</span>
@@ -105,21 +103,24 @@ function mainView() {
 }
 
 function devicesView() {
-  const own = s.profile?.publicKey;
+  const own = s.profile?.deviceId;
   const rows = s.devices
     .map(
-      (d, i) => `
+      (d) => `
       <li class="row">
-        <div><div class="t">Device ${i + 1}${d.public_key === own ? '<em>This device</em>' : ""}</div><div class="muted mono">${esc(d.address4)}</div></div>
-        <button class="ghost danger" data-revoke="${esc(d.public_key)}">Remove</button>
+        <div class="grow">
+          <div class="t">${esc(d.name)}${d.id === own ? "<em>This device</em>" : ""}</div>
+          <div class="muted sub"><span class="live ${d.online ? "on" : ""}"></span>${d.online ? "Online now" : "Offline"} · Added ${fmtDate(d.created)}</div>
+        </div>
+        <button class="ghost danger" data-revoke="${esc(d.id)}">Remove</button>
       </li>`
     )
     .join("");
   return `
     <section class="view">
       <h2>Devices</h2>
-      <p class="muted">${s.devices.length} of 5 in use. Add a phone or another computer with a QR code.</p>
-      <button class="pill small" data-act="add" ${s.busy || s.devices.length >= 5 ? "disabled" : ""}>${s.busy ? "GENERATING KEYS…" : "ADD DEVICE"}</button>
+      <p class="muted">${s.devices.length} of ${s.limit} in use. Every device has its own key and can be removed at any time.</p>
+      <button class="pill small" data-act="addsheet" ${s.devices.length >= s.limit ? "disabled" : ""}>ADD DEVICE</button>
       <p class="error" role="alert">${esc(s.error)}</p>
       <ul class="list">${rows || '<li class="empty">No devices yet</li>'}</ul>
     </section>`;
@@ -132,45 +133,75 @@ function settingsView() {
       <h2>Settings</h2>
       <ul class="list">
         <li class="row"><div><div class="t">Server</div><div class="muted mono">${esc(api.serverHost())}</div></div></li>
-        <li class="row"><div><div class="t">Account number</div><div class="muted mono" id="acct">${masked}</div></div><button class="ghost" data-act="reveal">${s.reveal ? "Hide" : "Show"}</button></li>
-        <li class="row"><div><div class="t">Kill switch</div><div class="muted">Blocks all traffic outside the tunnel while connected</div></div><span class="badge">On</span></li>
+        <li class="row"><div><div class="t">Account number</div><div class="muted mono">${masked}</div></div><button class="ghost" data-act="reveal">${s.reveal ? "Hide" : "Show"}</button></li>
+        <li class="row"><div><div class="t">Password</div><div class="muted">Used to manage your devices</div></div><button class="ghost" data-act="pwsheet">Change</button></li>
+        ${native ? `<li class="row"><div><div class="t">Kill switch</div><div class="muted">Blocks traffic outside the tunnel while connected</div></div><span class="badge">On</span></li>` : ""}
         <li class="row"><div><div class="t">Logging</div><div class="muted">Nothing is logged on the server or in this app</div></div><span class="badge">None</span></li>
       </ul>
       <div class="about">
-        <b>Why WireGuard</b>
-        <p>Around 4,000 lines of audited code, modern cryptography (ChaCha20-Poly1305, Curve25519), built into the Linux kernel and fast on cheap hardware. Small enough to trust, with no legacy protocol baggage.</p>
+        <b>Why OpenVPN</b>
+        <p>Two decades of scrutiny, open source, and it connects on almost any network, including over TCP when UDP is blocked. Per-device certificates mean you can see and remove every device that can connect.</p>
       </div>
       <button class="secondary wide" data-act="signout">${native ? "Remove this device and sign out" : "Sign out"}</button>
     </section>`;
 }
 
 function sheetView() {
-  if (!s.sheet) return "";
-  return `
-    <div class="sheet" data-act="closesheet">
-      <div class="card" data-stop>
-        <h2>Device configuration</h2>
-        <p class="muted">Scan with the WireGuard app or download the file. The private key is shown only now.</p>
-        <div class="qr">${qrSvg(s.sheet.text)}</div>
-        <div class="actions"><button class="pill small" data-act="download">DOWNLOAD</button><button class="secondary" data-act="copy">Copy</button></div>
-        <button class="ghost wide" data-act="closesheet">Done</button>
-      </div>
-    </div>`;
+  const k = s.sheet;
+  if (!k) return "";
+  let inner = "";
+  if (k.kind === "name") {
+    inner = `
+      <h2>Add a device</h2>
+      <p class="muted">Give it a name you will recognise.</p>
+      <input id="devname" maxlength="32" placeholder="Pixel 8" spellcheck="false" autocomplete="off" value="${esc(k.value || "")}" />
+      <p class="error" role="alert">${esc(s.error)}</p>
+      <button class="pill small" data-act="createdevice" ${s.busy ? "disabled" : ""}>${s.busy ? "CREATING KEYS…" : "CREATE"}</button>
+      <button class="ghost wide" data-act="closesheet">Cancel</button>`;
+  } else if (k.kind === "config") {
+    inner = `
+      <h2>Device profile</h2>
+      <p class="muted">Import this file into the OpenVPN app on that device. The private key is included and is shown only now.</p>
+      <div class="actions"><button class="pill small" data-act="download">DOWNLOAD</button><button class="secondary" data-act="copy" id="copybtn">Copy</button></div>
+      <button class="ghost wide" data-act="closesheet">Done</button>`;
+  } else if (k.kind === "password") {
+    inner = `
+      <h2>Change password</h2>
+      <input id="newpw" type="password" placeholder="New password (10+ characters)" autocomplete="new-password" />
+      <p class="error" role="alert">${esc(s.error)}</p>
+      <button class="pill small" data-act="savepw" ${s.busy ? "disabled" : ""}>SAVE</button>
+      <button class="ghost wide" data-act="closesheet">Cancel</button>`;
+  }
+  return `<div class="sheet" data-act="closesheet"><div class="card" data-stop>${inner}</div></div>`;
 }
 
 function setupView() {
-  const needServer = Boolean(native) || !/^https?:$/.test(location.protocol);
+  if (s.created) {
+    return `
+      <main class="screen center setup">
+        ${titlebar()}
+        <div class="brand">veyl</div>
+        <h1>Account created</h1>
+        <p class="muted">This is your account number. Write it down: there is no email and no recovery.</p>
+        <div class="bignum mono">${group(s.created)}</div>
+        <button class="pill" data-act="continuecreated">CONTINUE</button>
+      </main>`;
+  }
+  const needServer = !sameOrigin;
+  const creating = s.mode === "create";
   return `
     <main class="screen center setup">
       ${titlebar()}
       <div class="brand">veyl</div>
       <div class="wavehost small" id="wavehost"></div>
       <h1>Private by design</h1>
-      <p class="muted">No email. No logs. Your server, your rules.</p>
+      <div class="seg"><button class="${creating ? "" : "on"}" data-mode="signin">Sign in</button><button class="${creating ? "on" : ""}" data-mode="create">Create account</button></div>
       <form class="stack" autocomplete="off">
         ${needServer ? '<input id="server" placeholder="vpn.yourdomain.com" spellcheck="false" autocapitalize="off" autocomplete="off" />' : ""}
-        <input id="acct" inputmode="numeric" placeholder="0000 0000 0000 0000" maxlength="19" spellcheck="false" autocomplete="off" />
-        <button class="pill" type="submit">${s.busy ? "CHECKING…" : "CONTINUE"}</button>
+        <input id="acct" inputmode="numeric" placeholder="${creating ? "Account number (optional)" : "0000 0000 0000 0000"}" maxlength="19" spellcheck="false" autocomplete="off" />
+        <input id="pw" type="password" placeholder="${creating ? "Choose a password (10+ characters)" : "Password"}" autocomplete="${creating ? "new-password" : "current-password"}" />
+        ${creating ? '<input id="pw2" type="password" placeholder="Repeat password" autocomplete="new-password" />' : ""}
+        <button class="pill" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? "PLEASE WAIT…" : creating ? "CREATE ACCOUNT" : "SIGN IN"}</button>
         <p class="error" role="alert">${esc(s.error)}</p>
       </form>
     </main>`;
@@ -188,7 +219,7 @@ function mountWave() {
 }
 
 function render() {
-  const node = el(s.profile || s.account ? shell() : setupView());
+  const node = el(s.signedIn ? shell() : setupView());
   app.replaceChildren(node);
   mountWave();
   bind(node);
@@ -198,6 +229,14 @@ function bind(node) {
   node.querySelectorAll("[data-tab]").forEach((b) =>
     b.addEventListener("click", () => {
       s.tab = b.dataset.tab;
+      s.error = "";
+      render();
+      if (s.tab === "devices") refreshDevices();
+    })
+  );
+  node.querySelectorAll("[data-mode]").forEach((b) =>
+    b.addEventListener("click", () => {
+      s.mode = b.dataset.mode;
       s.error = "";
       render();
     })
@@ -214,8 +253,12 @@ function bind(node) {
   if (form) {
     const acct = form.querySelector("#acct");
     const server = form.querySelector("#server");
+    const pw = form.querySelector("#pw");
+    const pw2 = form.querySelector("#pw2");
     acct.value = s.account;
     if (server) server.value = s.server;
+    pw.value = s.password;
+    if (pw2) pw2.value = s.confirm;
     acct.addEventListener("input", () => {
       s.account = group(acct.value);
       acct.value = s.account;
@@ -223,7 +266,10 @@ function bind(node) {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       s.server = server ? server.value.trim() : "";
-      await signIn();
+      s.password = pw.value;
+      s.confirm = pw2 ? pw2.value : "";
+      if (s.mode === "create") await createAccount();
+      else await signIn();
     });
   }
 }
@@ -234,56 +280,94 @@ function fail(msg) {
   render();
 }
 
-async function signIn() {
-  if (raw().length !== 16) return fail("Account number must be 16 digits");
-  if ((native || !/^https?:$/.test(location.protocol)) && !s.server) return fail("Enter your server address");
+function checkServer() {
+  if (!sameOrigin && !s.server) return "Enter your server address";
+  return "";
+}
+
+async function createAccount() {
+  const bad = checkServer() || (s.password.length < 10 ? "Password must be at least 10 characters" : "") || (s.password !== s.confirm ? "Passwords do not match" : "") || (raw() && raw().length !== 16 ? "Account number must be 16 digits" : "");
+  if (bad) return fail(bad);
   s.busy = true;
   s.error = "";
   render();
   try {
     api.setServer(s.server);
-    s.devices = await api.devices(raw());
-    if (native) await provision();
+    const number = await api.register(raw(), s.password);
+    s.account = group(number);
     s.busy = false;
-    s.tab = "main";
-    render();
-  } catch (err) {
-    fail(err.message === "Failed to fetch" ? "Cannot reach that server" : err.message);
-  }
-}
-
-async function provision() {
-  const p = await native.provision(s.server, raw());
-  s.profile = { server: p.server, account: p.account, publicKey: p.public_key };
-  s.devices = await api.devices(raw());
-}
-
-async function addDevice() {
-  if (!native && !supportsX25519()) return fail("This browser cannot generate WireGuard keys");
-  s.busy = true;
-  s.error = "";
-  render();
-  try {
-    if (native) {
-      s.sheet = { text: await native.newDeviceConfig() };
-    } else {
-      const kp = await generateKeypair();
-      const res = await api.enroll(raw(), kp.publicKey);
-      s.sheet = { text: api.buildConfig(kp.privateKey, res) };
-    }
-    s.devices = await api.devices(raw());
-    s.busy = false;
+    if (raw().length === 16 && !s.created) s.created = number;
     render();
   } catch (err) {
     fail(err.message);
   }
 }
 
-async function removeDevice(key) {
+async function signIn() {
+  const bad = checkServer() || (raw().length !== 16 ? "Account number must be 16 digits" : "") || (!s.password ? "Enter your password" : "");
+  if (bad) return fail(bad);
+  s.busy = true;
+  s.error = "";
+  render();
   try {
-    await api.revoke(raw(), key);
-    if (s.profile && key === s.profile.publicKey) return signOut(false);
-    s.devices = await api.devices(raw());
+    api.setServer(s.server);
+    const r = await api.login(raw(), s.password);
+    s.devices = r.devices;
+    s.limit = r.limit;
+    if (native) {
+      const p = await api.provision(raw(), s.password, "Windows PC");
+      s.profile = { server: p.server, account: p.account, deviceId: p.device_id };
+      const l = await api.listDevices();
+      s.devices = l.devices;
+      s.limit = l.limit;
+    }
+    s.password = "";
+    s.confirm = "";
+    s.signedIn = true;
+    s.busy = false;
+    s.tab = "main";
+    render();
+  } catch (err) {
+    fail(err.message);
+  }
+}
+
+async function refreshDevices() {
+  try {
+    const l = await api.listDevices();
+    s.devices = l.devices;
+    s.limit = l.limit;
+    if (s.tab === "devices" && !s.sheet) render();
+  } catch {}
+}
+
+async function createDevice() {
+  const input = document.getElementById("devname");
+  const name = input.value.trim();
+  if (!name) return fail("Enter a name");
+  if (!native && !supportsKeys()) return fail("This browser cannot generate keys");
+  s.sheet.value = name;
+  s.busy = true;
+  s.error = "";
+  render();
+  try {
+    const text = await api.addDevice(name);
+    s.sheet = { kind: "config", text };
+    s.busy = false;
+    const l = await api.listDevices();
+    s.devices = l.devices;
+    render();
+  } catch (err) {
+    fail(err.message);
+  }
+}
+
+async function removeDevice(id) {
+  try {
+    await api.revokeDevice(id);
+    if (s.profile && id === s.profile.deviceId) return signOut(false);
+    await refreshDevices();
+    s.error = "";
     render();
   } catch (err) {
     fail(err.message);
@@ -292,19 +376,23 @@ async function removeDevice(key) {
 
 async function signOut(revokeOwn = true) {
   if (native) await native.signOut(revokeOwn).catch(() => {});
-  Object.assign(s, { profile: null, account: "", devices: [], status: "off", error: "", tab: "main", sheet: null, reveal: false });
+  api.clearCreds();
+  Object.assign(s, { profile: null, account: "", password: "", confirm: "", devices: [], status: "off", error: "", tab: "main", sheet: null, reveal: false, signedIn: false, mode: "signin", created: "" });
   render();
 }
 
 async function toggle() {
-  if (!native) return addDevice();
+  if (!native) {
+    s.sheet = { kind: "name", value: "Browser device" };
+    return render();
+  }
   s.error = "";
   if (s.status === "on") {
     s.status = "connecting";
     render();
     await native.disconnect();
     s.status = "off";
-    s.rx = s.tx = s.down = s.up = 0;
+    s.rx = s.down = 0;
     return render();
   }
   s.status = "connecting";
@@ -320,28 +408,64 @@ async function toggle() {
   render();
 }
 
+async function savePassword() {
+  const v = document.getElementById("newpw").value;
+  if (v.length < 10) return fail("Password must be at least 10 characters");
+  s.busy = true;
+  s.error = "";
+  render();
+  try {
+    await api.changePassword(v);
+    s.sheet = null;
+    s.busy = false;
+    render();
+  } catch (err) {
+    fail(err.message);
+  }
+}
+
 const actions = {
   toggle,
-  add: addDevice,
   reveal() {
     s.reveal = !s.reveal;
     render();
   },
   signout: () => signOut(true),
+  addsheet() {
+    s.sheet = { kind: "name", value: "" };
+    s.error = "";
+    render();
+  },
+  pwsheet() {
+    s.sheet = { kind: "password" };
+    s.error = "";
+    render();
+  },
+  createdevice: createDevice,
+  savepw: savePassword,
   closesheet() {
     s.sheet = null;
+    s.error = "";
+    s.busy = false;
+    render();
+  },
+  continuecreated() {
+    s.created = "";
+    s.mode = "signin";
     render();
   },
   download() {
-    const url = URL.createObjectURL(new Blob([s.sheet.text], { type: "text/plain" }));
+    const url = URL.createObjectURL(new Blob([s.sheet.text], { type: "application/x-openvpn-profile" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = "veyl.conf";
+    a.download = "veyl.ovpn";
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
   async copy() {
     await navigator.clipboard.writeText(s.sheet.text);
+    const b = document.getElementById("copybtn");
+    if (b) b.textContent = "Copied";
   },
 };
 
@@ -358,14 +482,12 @@ function tick() {
 }
 
 async function poll() {
-  if (!native || s.status === "connecting" || !s.profile) return;
+  if (!native || !s.signedIn || s.status === "connecting") return;
   try {
     const r = await native.status();
-    if (r.up) {
+    if (r.state === "connected") {
       s.down = Math.max(0, r.rx - s.rx);
-      s.up = Math.max(0, r.tx - s.tx);
       s.rx = r.rx;
-      s.tx = r.tx;
       if (s.status !== "on") {
         s.status = "on";
         s.since = Date.now();
@@ -373,7 +495,7 @@ async function poll() {
       }
     } else if (s.status === "on") {
       s.status = "off";
-      s.down = s.up = 0;
+      s.down = 0;
       render();
     }
   } catch {}
@@ -381,21 +503,22 @@ async function poll() {
 
 async function boot() {
   if (native) {
-    const p = await native.getProfile();
+    const p = await native.getProfile().catch(() => null);
     if (p) {
-      s.profile = { server: p.server, account: p.account, publicKey: p.public_key };
+      s.profile = { server: p.server, account: p.account, deviceId: p.device_id };
       s.server = p.server;
       s.account = group(p.account);
+      s.signedIn = true;
       api.setServer(p.server);
-      api.devices(p.account).then((d) => {
-        s.devices = d;
-        if (s.tab === "devices") render();
-      }).catch(() => {});
+      refreshDevices();
     }
   }
   render();
   setInterval(tick, 500);
   setInterval(poll, 1000);
+  setInterval(() => {
+    if (s.signedIn && s.tab === "devices") refreshDevices();
+  }, 10000);
 }
 
 boot();

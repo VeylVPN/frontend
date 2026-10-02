@@ -1,11 +1,13 @@
 import { native } from "./native.js";
+import { generateDeviceKey, fillProfile } from "./csr.js";
 
 let base = "";
 let rawServer = "";
+let creds = null;
 
 export function setServer(server) {
-  rawServer = server || "";
-  const v = (server || "").trim().replace(/\/+$/, "");
+  rawServer = (server || "").trim();
+  const v = rawServer.replace(/\/+$/, "");
   if (!v) {
     base = "";
     return;
@@ -19,41 +21,62 @@ export function serverHost() {
 }
 
 async function post(path, body) {
-  if (native) {
-    try {
-      return await native.apiPost(rawServer, path, body);
-    } catch (err) {
-      throw new Error(String(err));
-    }
-  }
   const res = await fetch(base + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     cache: "no-store",
     referrerPolicy: "no-referrer",
+  }).catch(() => {
+    throw new Error("Cannot reach that server");
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Request failed");
   return data;
 }
 
-export const enroll = (account, publicKey) => post("/v1/enroll", { account, public_key: publicKey });
-export const devices = (account) => post("/v1/devices", { account });
-export const revoke = (account, publicKey) => post("/v1/revoke", { account, public_key: publicKey });
+const msg = (err) => new Error(typeof err === "string" ? err : err?.message || "Request failed");
 
-export function buildConfig(privateKey, r) {
-  return [
-    "[Interface]",
-    `PrivateKey = ${privateKey}`,
-    `Address = ${r.address4}, ${r.address6}`,
-    `DNS = ${r.dns}`,
-    "",
-    "[Peer]",
-    `PublicKey = ${r.server_public_key}`,
-    "AllowedIPs = 0.0.0.0/0, ::/0",
-    `Endpoint = ${r.endpoint}`,
-    "PersistentKeepalive = 25",
-    "",
-  ].join("\n");
+export async function register(account, password) {
+  if (native) return native.register(rawServer, account || null, password).catch((e) => Promise.reject(msg(e)));
+  const r = await post("/v1/register", account ? { account, password } : { password });
+  return r.account;
+}
+
+export async function login(account, password) {
+  if (native) return native.loginCheck(rawServer, account, password).catch((e) => Promise.reject(msg(e)));
+  const r = await post("/v1/devices", { account, password });
+  creds = { account, password };
+  return r;
+}
+
+export async function provision(account, password, name) {
+  return native.provision(rawServer, account, password, name).catch((e) => Promise.reject(msg(e)));
+}
+
+export async function listDevices() {
+  if (native) return native.listDevices().catch((e) => Promise.reject(msg(e)));
+  return post("/v1/devices", creds);
+}
+
+export async function addDevice(name) {
+  if (native) return native.addDeviceConfig(name).catch((e) => Promise.reject(msg(e)));
+  const k = await generateDeviceKey();
+  const r = await post("/v1/enroll", { ...creds, name, csr: k.csr });
+  return fillProfile(r.profile, k.privateKey);
+}
+
+export async function revokeDevice(id) {
+  if (native) return native.revokeDevice(id).catch((e) => Promise.reject(msg(e)));
+  return post("/v1/revoke", { ...creds, id });
+}
+
+export async function changePassword(newPassword) {
+  if (native) return native.changePassword(newPassword).catch((e) => Promise.reject(msg(e)));
+  await post("/v1/password", { ...creds, new_password: newPassword });
+  creds = { ...creds, password: newPassword };
+}
+
+export function clearCreds() {
+  creds = null;
 }

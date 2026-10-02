@@ -14,13 +14,17 @@ const wrap = async (cmd, args) => {
 export const native = inTauri
   ? {
       getProfile: () => invoke("get_profile"),
-      provision: (server, account) => invoke("provision", { server, account }),
-      newDeviceConfig: () => invoke("new_device_config"),
+      register: (server, account, password) => invoke("register", { server, account, password }),
+      loginCheck: (server, account, password) => invoke("login_check", { server, account, password }),
+      provision: (server, account, password, name) => invoke("provision", { server, account, password, name }),
+      listDevices: () => invoke("list_devices"),
+      addDeviceConfig: (name) => invoke("add_device_config", { name }),
+      revokeDevice: (id) => invoke("revoke_device", { id }),
+      changePassword: (newPassword) => invoke("change_password", { newPassword }),
       connect: () => wrap("connect"),
       disconnect: () => wrap("disconnect"),
       status: () => invoke("status"),
       signOut: (revoke) => invoke("sign_out", { revoke }),
-      apiPost: (server, path, body) => invoke("api_post", { server, path, body }),
       windowControl: (action) => invoke("window_control", { action }),
     }
   : null;
