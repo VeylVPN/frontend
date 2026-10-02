@@ -3,9 +3,9 @@ import { generateKeypair, supportsX25519 } from "./keys.js";
 import * as api from "./api.js";
 import { createWave } from "./wave.js";
 import { icons } from "./icons.js";
+import { native } from "./native.js";
 import "./style.css";
 
-const native = window.veyl || null;
 const app = document.getElementById("app");
 const wave = createWave();
 
@@ -63,7 +63,7 @@ function qrSvg(text) {
 
 function titlebar() {
   if (!native) return "";
-  return `<div class="win"><span class="drag"></span><button class="wbtn" data-win="min">${icons.min}</button><button class="wbtn x" data-win="close">${icons.close}</button></div>`;
+  return `<div class="win"><span class="drag" data-tauri-drag-region></span><button class="wbtn" data-win="min">${icons.min}</button><button class="wbtn x" data-win="close">${icons.close}</button></div>`;
 }
 
 function tabs() {
@@ -253,24 +253,24 @@ async function signIn() {
 }
 
 async function provision() {
-  if (!supportsX25519()) throw new Error("Cannot generate keys on this system");
-  const kp = await generateKeypair();
-  const res = await api.enroll(raw(), kp.publicKey);
-  const conf = api.buildConfig(kp.privateKey, res);
-  s.profile = { server: s.server, account: raw(), publicKey: kp.publicKey, conf };
-  await native.saveProfile(s.profile);
+  const p = await native.provision(s.server, raw());
+  s.profile = { server: p.server, account: p.account, publicKey: p.public_key };
   s.devices = await api.devices(raw());
 }
 
 async function addDevice() {
-  if (!supportsX25519()) return fail("This browser cannot generate WireGuard keys");
+  if (!native && !supportsX25519()) return fail("This browser cannot generate WireGuard keys");
   s.busy = true;
   s.error = "";
   render();
   try {
-    const kp = await generateKeypair();
-    const res = await api.enroll(raw(), kp.publicKey);
-    s.sheet = { text: api.buildConfig(kp.privateKey, res) };
+    if (native) {
+      s.sheet = { text: await native.newDeviceConfig() };
+    } else {
+      const kp = await generateKeypair();
+      const res = await api.enroll(raw(), kp.publicKey);
+      s.sheet = { text: api.buildConfig(kp.privateKey, res) };
+    }
     s.devices = await api.devices(raw());
     s.busy = false;
     render();
@@ -291,11 +291,7 @@ async function removeDevice(key) {
 }
 
 async function signOut(revokeOwn = true) {
-  if (native) {
-    await native.disconnect();
-    if (revokeOwn && s.profile) await api.revoke(raw(), s.profile.publicKey).catch(() => {});
-    await native.clearProfile();
-  }
+  if (native) await native.signOut(revokeOwn).catch(() => {});
   Object.assign(s, { profile: null, account: "", devices: [], status: "off", error: "", tab: "main", sheet: null, reveal: false });
   render();
 }
@@ -387,7 +383,7 @@ async function boot() {
   if (native) {
     const p = await native.getProfile();
     if (p) {
-      s.profile = p;
+      s.profile = { server: p.server, account: p.account, publicKey: p.public_key };
       s.server = p.server;
       s.account = group(p.account);
       api.setServer(p.server);

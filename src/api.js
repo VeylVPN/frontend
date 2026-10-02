@@ -1,6 +1,10 @@
+import { native } from "./native.js";
+
 let base = "";
+let rawServer = "";
 
 export function setServer(server) {
+  rawServer = server || "";
   const v = (server || "").trim().replace(/\/+$/, "");
   if (!v) {
     base = "";
@@ -15,6 +19,13 @@ export function serverHost() {
 }
 
 async function post(path, body) {
+  if (native) {
+    try {
+      return await native.apiPost(rawServer, path, body);
+    } catch (err) {
+      throw new Error(String(err));
+    }
+  }
   const res = await fetch(base + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
