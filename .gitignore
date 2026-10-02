@@ -3,3 +3,5 @@ dist
 target
 src-tauri/gen
 release
+src/assets/fonts/
+CLAUDE.md
