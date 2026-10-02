@@ -1,17 +1,17 @@
 import { reactive } from "vue"
 
-export type Page = "home" | "server" | "devices" | "settings"
+export type Sheet = "server" | "devices" | "settings"
 
-export const PAGES: { id: Page; label: string }[] = [
-    { id: "home", label: "Home" },
-    { id: "server", label: "Server" },
-    { id: "devices", label: "Devices" },
-    { id: "settings", label: "Settings" },
-]
+export type Page = "home" | Sheet
 
-export const nav = reactive({ page: "home" as Page, section: null as string | null })
+export const nav = reactive({ sheet: null as Sheet | null, section: null as string | null })
 
 export function Go(page: Page, section: string | null = null) {
-    nav.page = page
+    nav.sheet = page === "home" ? null : page
     nav.section = section
+}
+
+export function CloseSheet() {
+    nav.sheet = null
+    nav.section = null
 }

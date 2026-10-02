@@ -37,10 +37,10 @@ function Input(event: Event) {
 
 <template>
     <div class="flex flex-col gap-1.5">
-        <label :for="id" class="text-small font-semibold text-fg-2">{{ label }}</label>
+        <label :for="id" class="px-1 text-small font-semibold text-fg-2">{{ label }}</label>
         <div
-            class="flex h-11 items-center rounded-md border bg-surface-1 transition-[border-color,box-shadow] duration-150 focus-within:border-violet-400/70 focus-within:shadow-[0_0_0_3px_rgb(113_92_255/0.18)]"
-            :class="error ? 'border-danger/60' : 'border-line-2 hover:border-line-3'"
+            class="flex h-[52px] items-center rounded-[16px] border bg-white/[0.045] transition-[border-color,box-shadow,background] duration-200 focus-within:border-violet-400/70 focus-within:bg-white/[0.06] focus-within:shadow-[0_0_0_4px_rgb(113_92_255/0.16)]"
+            :class="error ? 'border-danger/60' : 'border-white/[0.09] hover:border-white/[0.16]'"
         >
             <input
                 :id="id"
@@ -55,7 +55,7 @@ function Input(event: Event) {
                 :aria-describedby="described"
                 spellcheck="false"
                 autocapitalize="off"
-                class="h-full min-w-0 flex-1 bg-transparent px-3.5 text-body text-fg outline-none placeholder:text-fg-4 disabled:opacity-60"
+                class="h-full min-w-0 flex-1 bg-transparent px-4 text-[1rem] text-fg outline-none placeholder:text-fg-4 disabled:opacity-60"
                 :class="mono && 'tech !text-[0.9375rem] tracking-[0.04em]'"
                 @input="Input"
             />

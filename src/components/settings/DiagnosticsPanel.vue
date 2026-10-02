@@ -4,16 +4,19 @@ import { Backend } from "../../backend"
 import { Host, MaskIp } from "../../lib/format"
 import { FormatAsn } from "../../partners/registry"
 import { connection } from "../../stores/connection"
+import { nav } from "../../stores/nav"
 import { partner } from "../../stores/partner"
 import { prefs } from "../../stores/prefs"
 import { session } from "../../stores/session"
 import UiCopy from "../ui/UiCopy.vue"
-import UiPanel from "../ui/UiPanel.vue"
+import IconChevronDown from "../icons/IconChevronDown.vue"
+import ListGroup from "../ui/ListGroup.vue"
 
 const VERSION = __APP_VERSION__
 
 const bridge = Backend()
 const installed = ref<boolean | null>(null)
+const open = ref(nav.section === "diagnostics")
 
 const PARTNER_STATES: Record<string, string> = {
     idle: "Not run",
@@ -64,15 +67,21 @@ onMounted(async () => {
 </script>
 
 <template>
-    <UiPanel title="Diagnostics" description="Copy this when reporting a problem. It never includes your account number, password or keys.">
+    <ListGroup id="sheet-diagnostics" title="Diagnostics" hint="Never includes your account number, password or keys.">
         <template #aside>
             <UiCopy :value="report" label="Copy diagnostics" text />
         </template>
-        <dl class="mx-5 mb-4 mt-2 overflow-hidden rounded-md border border-line">
-            <div v-for="[label, value] in rows" :key="label" class="grid grid-cols-[10rem_1fr] gap-4 border-t border-line px-3.5 py-2 first:border-t-0">
-                <dt class="text-small text-fg-3">{{ label }}</dt>
-                <dd class="tech selectable break-words text-fg-2">{{ value }}</dd>
-            </div>
-        </dl>
-    </UiPanel>
+        <button type="button" class="flex w-full items-center justify-between px-4 py-3 text-left text-small font-semibold text-fg-2 transition-colors hover:text-fg" :aria-expanded="open" @click="open = !open">
+            {{ open ? "Hide details" : "Show details" }}
+            <IconChevronDown class="transition-transform duration-300 ease-veil" :class="open && 'rotate-180'" />
+        </button>
+        <Transition name="collapse">
+            <dl v-if="open" class="px-4 pb-3">
+                <div v-for="[label, value] in rows" :key="label" class="grid grid-cols-[8.5rem_1fr] gap-3 py-1.5">
+                    <dt class="text-[0.75rem] text-fg-3">{{ label }}</dt>
+                    <dd class="tech selectable break-words !text-[0.75rem] text-fg-2">{{ value }}</dd>
+                </div>
+            </dl>
+        </Transition>
+    </ListGroup>
 </template>

@@ -15,9 +15,9 @@
       {
         "label": "main",
         "title": "VeylVPN",
-        "width": 1100,
+        "width": 1080,
         "height": 720,
-        "minWidth": 900,
+        "minWidth": 760,
         "minHeight": 600,
         "decorations": false,
         "resizable": true,

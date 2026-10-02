@@ -2,18 +2,18 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue"
 import { Backend } from "../backend"
 import PixelGlobe from "../components/connection/PixelGlobe.vue"
+import IconChevronRight from "../components/icons/IconChevronRight.vue"
 import IconServer from "../components/icons/IconServer.vue"
 import ExternalLink from "../components/shell/ExternalLink.vue"
-import TitleBar from "../components/shell/TitleBar.vue"
+import TopBar from "../components/shell/TopBar.vue"
 import UiButton from "../components/ui/UiButton.vue"
 import UiCopy from "../components/ui/UiCopy.vue"
-import UiDetails from "../components/ui/UiDetails.vue"
 import UiField from "../components/ui/UiField.vue"
 import UiSegmented from "../components/ui/UiSegmented.vue"
 import { DateText, GroupAccount } from "../lib/format"
 import { GUIDE } from "../lib/links"
+import { prefs } from "../stores/prefs"
 import {
-    type AccountMode,
     AvailableMethods,
     ChangeServer,
     ContinueCreated,
@@ -32,61 +32,33 @@ import {
 
 const native = Backend().mode === "native"
 
-const panel = ref<HTMLElement | null>(null)
+const card = ref<HTMLElement | null>(null)
+const direction = ref<"forward" | "back">("forward")
 
-async function Focus() {
-    await nextTick()
-    setTimeout(() => panel.value?.querySelector<HTMLElement>("input:not([type=radio]), [data-initial]")?.focus(), 240)
-}
+const ORDER = ["server", "account", "created", "limit"]
 
-const STEPS = [
-    { title: "Host a VeylVPN server", text: "One script sets it up on any Debian or Ubuntu VPS." },
-    { title: "Sign in with your account number", text: "No email. Just a 16-digit number and a password." },
-    { title: "Connect", text: "Traffic leaves through your own server." },
-]
-
-const createLabel = computed(() => {
-    switch (setup.info?.registration) {
-        case "open":
-            return "Create account"
-        case "invite":
-            return "Join"
-        default:
-            return "Claim account"
-    }
-})
-
-const modes = computed(() => [
-    { value: "signin" as AccountMode, label: "Sign in" },
-    { value: "create" as AccountMode, label: createLabel.value },
-])
-
-const METHOD_LABELS: Record<JoinMethod, string> = { open: "New account", invite: "Invite code", number: "Account number" }
+const METHOD_LABELS: Record<JoinMethod, string> = { open: "New", invite: "Invite code", number: "Account number" }
 
 const methods = computed(() => AvailableMethods().map((value) => ({ value, label: METHOD_LABELS[value] })))
 
-const mode = computed({ get: () => setup.mode, set: (value: AccountMode) => SetMode(value) })
 const method = computed({ get: () => setup.method, set: (value: JoinMethod) => SetMethod(value) })
 
-const registration = computed(() => {
-    switch (setup.info?.registration) {
-        case "open":
-            return "Anyone can create an account on this server."
-        case "invite":
-            return "New accounts need an invite code or an account number from the admin."
-        case "closed":
-            return "This server only accepts account numbers made by its admin."
+const createLabel = computed(() => (setup.info?.registration === "open" ? "Create an account" : setup.info?.registration === "invite" ? "Join with an invite" : "Claim an account number"))
+
+const subtitle = computed(() => {
+    switch (setup.step) {
+        case "server":
+            return "Connect to the VeylVPN server you host."
+        case "account":
+            return setup.mode === "signin" ? "Sign in with your account number." : "No email. Just a number and a password."
+        case "created":
+            return "Save this. It's the only way to sign in."
         default:
-            return ""
+            return "Free a slot to add this computer."
     }
 })
 
-const submitLabel = computed(() => {
-    if (setup.method === "invite") {
-        return "Join with invite"
-    }
-    return setup.method === "number" ? "Set password" : "Create account"
-})
+const submitLabel = computed(() => (setup.method === "invite" ? "Join" : setup.method === "number" ? "Set password" : "Create account"))
 
 function FieldError(field: string): string | null {
     return setup.problem?.field === field ? setup.problem.message : null
@@ -96,7 +68,20 @@ function Account(value: string) {
     setup.account = GroupAccount(value)
 }
 
-watch(() => [setup.step, setup.mode, setup.method], Focus)
+async function Focus() {
+    await nextTick()
+    setTimeout(() => card.value?.querySelector<HTMLElement>("input:not([type=radio]), [data-initial]")?.focus(), 320)
+}
+
+watch(
+    () => setup.step,
+    (step, previous) => {
+        direction.value = ORDER.indexOf(step) >= ORDER.indexOf(previous) ? "forward" : "back"
+        void Focus()
+    },
+)
+
+watch(() => [setup.mode, setup.method], Focus)
 
 onMounted(() => {
     StartSetup()
@@ -105,162 +90,214 @@ onMounted(() => {
 </script>
 
 <template>
-    <div class="flex h-full flex-col bg-base">
-        <TitleBar v-if="native" />
-        <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(360px,460px)] max-[860px]:grid-cols-1">
-            <aside class="relative isolate flex flex-col justify-between overflow-hidden border-r border-line px-[clamp(1.5rem,4vw,3.5rem)] pb-10 pt-[clamp(1.5rem,6vh,4rem)] max-[860px]:hidden">
-                <div class="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(70%_60%_at_40%_100%,rgb(61_82_230/0.28),transparent_70%)]" aria-hidden="true" />
-                <div class="pointer-events-none absolute left-1/2 top-[66%] -z-10 w-[min(1040px,150%)] -translate-x-1/2" aria-hidden="true">
-                    <PixelGlobe tone="on" class="w-full" />
-                </div>
-                <div>
-                    <h1 class="max-w-[30rem] text-[clamp(2.25rem,5vw,3.6rem)] font-bold leading-[1] tracking-[-0.04em]">
-                        <span class="block text-fg">Your VPN.</span>
-                        <span class="text-gradient block">On infrastructure you control.</span>
+    <div class="relative flex h-full flex-col overflow-hidden bg-night">
+        <TopBar :menus="false" />
+        <div class="relative min-h-0 flex-1">
+            <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_105%,rgb(40_54_190/0.42),transparent_70%)]" aria-hidden="true" />
+            <div class="globe pointer-events-none absolute left-1/2 top-[54%] w-[max(1100px,128vw)] max-w-none -translate-x-1/2" aria-hidden="true">
+                <PixelGlobe tone="on" :orbit="false" :still="!prefs.motion" class="w-full" />
+            </div>
+            <main class="relative z-10 flex h-full flex-col items-center overflow-y-auto px-6 pb-10">
+                <div class="intro mt-[clamp(1rem,6vh,4rem)] text-center">
+                    <h1 class="text-[clamp(2.5rem,7.2vh,4.4rem)] font-bold leading-[0.98] tracking-[-0.045em] text-fg">
+                        Your VPN.
+                        <span class="text-gradient block">Actually yours.</span>
                     </h1>
-                    <ol class="mt-8 flex max-w-[26rem] flex-col gap-4">
-                        <li v-for="(step, index) in STEPS" :key="step.title" class="flex gap-3.5">
-                            <span class="grid size-7 shrink-0 place-items-center rounded-full border border-violet-400/30 bg-violet-500/15 text-[0.8rem] font-bold text-violet-200">{{ index + 1 }}</span>
-                            <span>
-                                <span class="block font-semibold text-fg">{{ step.title }}</span>
-                                <span class="block text-small text-fg-3">{{ step.text }}</span>
-                            </span>
-                        </li>
-                    </ol>
-                    <p class="mt-6"><ExternalLink :href="GUIDE">Read the self-hosting guide</ExternalLink></p>
+                    <Transition name="swap" mode="out-in">
+                        <p :key="subtitle" class="mt-4 text-fg-2">{{ subtitle }}</p>
+                    </Transition>
                 </div>
-            </aside>
 
-            <main ref="panel" class="flex min-h-0 flex-col overflow-y-auto">
-                <div class="m-auto w-full max-w-[400px] px-6 py-10">
-                    <Transition name="page" mode="out-in">
-                        <section v-if="setup.step === 'server'" key="server" aria-labelledby="setup-server">
-                            <h2 id="setup-server" class="text-heading font-bold text-fg">Add your server</h2>
-                            <p class="mt-2 text-fg-2">Enter the address you chose when you set up your VeylVPN server.</p>
-                            <form class="mt-6 flex flex-col gap-4" novalidate @submit.prevent="SubmitServer()">
-                                <UiField
-                                    v-model="setup.server"
-                                    label="Server address"
-                                    placeholder="vpn.example.com"
-                                    hint="A domain, or the free sslip.io name the installer offered."
-                                    :error="FieldError('server')"
-                                    inputmode="url"
-                                    mono
-                                />
-                                <div v-if="setup.error" class="rounded-md border border-danger/30 bg-danger/[0.06] px-3.5 py-3 text-small text-fg-2" role="alert">
-                                    <p><span class="font-semibold text-fg">{{ setup.error.title }}.</span> {{ setup.error.message }}</p>
-                                    <UiDetails class="mt-2">
-                                        <p class="tech selectable text-fg-3">{{ setup.error.detail }}</p>
-                                    </UiDetails>
-                                </div>
-                                <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ setup.busy ? "Checking server" : "Continue" }}</UiButton>
-                            </form>
-                            <p class="mt-6 text-small text-fg-3">No server yet? <ExternalLink :href="GUIDE">Set one up in a few minutes</ExternalLink></p>
-                        </section>
+                <div ref="card" class="card relative mt-[clamp(1.25rem,4vh,2.5rem)] w-full max-w-[410px] overflow-hidden rounded-[30px] p-6">
+                    <Transition :name="`step-${direction}`" mode="out-in">
+                        <form v-if="setup.step === 'server'" key="server" class="flex flex-col gap-4" novalidate @submit.prevent="SubmitServer()">
+                            <UiField v-model="setup.server" label="Server address" placeholder="vpn.example.com" :error="FieldError('server')" inputmode="url" mono />
+                            <p v-if="setup.error" class="text-small text-[#ff9b95]" role="alert">{{ setup.error.title }}. {{ setup.error.message }}</p>
+                            <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ setup.busy ? "Checking" : "Continue" }}</UiButton>
+                        </form>
 
-                        <section v-else-if="setup.step === 'account'" key="account" aria-labelledby="setup-account">
-                            <div v-if="native && setup.info" class="mb-6 flex items-center gap-3 rounded-lg border border-line bg-surface-1 p-3">
-                                <span class="grid size-9 shrink-0 place-items-center rounded-md bg-violet-500/15 text-violet-300"><IconServer /></span>
+                        <div v-else-if="setup.step === 'account'" key="account" class="flex flex-col gap-4">
+                            <button v-if="native && setup.info" type="button" class="server-chip flex items-center gap-3 rounded-[18px] p-2.5 pr-3 text-left" @click="ChangeServer()">
+                                <span class="grid size-9 shrink-0 place-items-center rounded-[12px] bg-violet-500/20 text-violet-200"><IconServer /></span>
                                 <span class="min-w-0 flex-1">
-                                    <span class="block truncate text-small font-semibold text-fg">{{ setup.info.name }}<span v-if="setup.info.version" class="font-normal text-fg-3"> · v{{ setup.info.version }}</span></span>
-                                    <span class="tech block truncate !text-[0.75rem] text-fg-3">{{ setup.server }}</span>
+                                    <span class="block truncate text-small font-semibold text-fg">{{ setup.info.name }}</span>
+                                    <span class="tech block truncate !text-[0.72rem] text-fg-3">{{ setup.server }}</span>
                                 </span>
-                                <UiButton size="sm" variant="ghost" @click="ChangeServer()">Change</UiButton>
-                            </div>
-                            <h2 id="setup-account" class="text-heading font-bold text-fg">{{ setup.mode === "signin" ? "Sign in" : createLabel }}</h2>
-                            <p v-if="registration" class="mt-2 text-small text-fg-3">{{ registration }}</p>
-                            <UiSegmented v-model="mode" :options="modes" label="Sign in or create an account" class="mt-5" />
+                                <span class="text-[0.75rem] font-semibold text-fg-3">Change</span>
+                            </button>
 
-                            <form v-if="setup.mode === 'signin'" class="mt-5 flex flex-col gap-4" novalidate @submit.prevent="SubmitSignIn()">
-                                <UiField
-                                    :model-value="setup.account"
-                                    label="Account number"
-                                    placeholder="0000 0000 0000 0000"
-                                    inputmode="numeric"
-                                    :maxlength="19"
-                                    :error="FieldError('account')"
-                                    mono
-                                    @update:model-value="Account"
-                                />
-                                <UiField v-model="setup.password" type="password" label="Password" autocomplete="current-password" :error="FieldError('password')" />
-                                <div v-if="setup.error" class="rounded-md border border-danger/30 bg-danger/[0.06] px-3.5 py-3 text-small text-fg-2" role="alert">
-                                    <span class="font-semibold text-fg">{{ setup.error.title }}.</span> {{ setup.error.message }}
-                                </div>
-                                <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ setup.busy ? "Signing in" : "Sign in" }}</UiButton>
-                                <p v-if="native" class="text-center text-small text-fg-3">Signing in creates a key for this computer and adds it to your devices.</p>
-                            </form>
+                            <Transition name="swap" mode="out-in">
+                                <form v-if="setup.mode === 'signin'" key="signin" class="flex flex-col gap-4" novalidate @submit.prevent="SubmitSignIn()">
+                                    <UiField :model-value="setup.account" label="Account number" placeholder="0000 0000 0000 0000" inputmode="numeric" :maxlength="19" :error="FieldError('account')" mono @update:model-value="Account" />
+                                    <UiField v-model="setup.password" type="password" label="Password" autocomplete="current-password" :error="FieldError('password')" />
+                                    <p v-if="setup.error" class="text-small text-[#ff9b95]" role="alert">{{ setup.error.title }}. {{ setup.error.message }}</p>
+                                    <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ setup.busy ? "Signing in" : "Sign in" }}</UiButton>
+                                    <button type="button" class="switch-mode" @click="SetMode('create')">
+                                        {{ createLabel }}
+                                        <IconChevronRight />
+                                    </button>
+                                </form>
+                                <form v-else key="create" class="flex flex-col gap-4" novalidate @submit.prevent="SubmitCreate()">
+                                    <UiSegmented v-if="methods.length > 1" v-model="method" :options="methods" label="How to create the account" class="self-start" />
+                                    <UiField v-if="setup.method === 'invite'" v-model="setup.invite" label="Invite code" placeholder="VEYL-ABCD-EFGH" :maxlength="64" :error="FieldError('invite')" mono />
+                                    <UiField
+                                        v-if="setup.method === 'number'"
+                                        :model-value="setup.account"
+                                        label="Account number from your admin"
+                                        placeholder="0000 0000 0000 0000"
+                                        inputmode="numeric"
+                                        :maxlength="19"
+                                        :error="FieldError('account')"
+                                        mono
+                                        @update:model-value="Account"
+                                    />
+                                    <UiField v-model="setup.password" type="password" label="Password" hint="At least 10 characters." autocomplete="new-password" :error="FieldError('password')" />
+                                    <UiField v-model="setup.repeat" type="password" label="Repeat password" autocomplete="new-password" :error="FieldError('repeat')" />
+                                    <p v-if="setup.error" class="text-small text-[#ff9b95]" role="alert">{{ setup.error.title }}. {{ setup.error.message }}</p>
+                                    <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ submitLabel }}</UiButton>
+                                    <button type="button" class="switch-mode" @click="SetMode('signin')">
+                                        I already have an account
+                                        <IconChevronRight />
+                                    </button>
+                                </form>
+                            </Transition>
+                        </div>
 
-                            <form v-else class="mt-5 flex flex-col gap-4" novalidate @submit.prevent="SubmitCreate()">
-                                <UiSegmented v-if="methods.length > 1" v-model="method" :options="methods" label="How to create the account" />
-                                <p v-if="setup.method === 'open'" class="text-small text-fg-3">Your server generates a 16-digit account number for you.</p>
-                                <UiField
-                                    v-if="setup.method === 'invite'"
-                                    v-model="setup.invite"
-                                    label="Invite code"
-                                    placeholder="VEYL-ABCD-EFGH-IJKL-MNOP"
-                                    :maxlength="64"
-                                    :error="FieldError('invite')"
-                                    mono
-                                />
-                                <UiField
-                                    v-if="setup.method === 'number'"
-                                    :model-value="setup.account"
-                                    label="Account number from your admin"
-                                    placeholder="0000 0000 0000 0000"
-                                    inputmode="numeric"
-                                    :maxlength="19"
-                                    :error="FieldError('account')"
-                                    mono
-                                    @update:model-value="Account"
-                                />
-                                <UiField v-model="setup.password" type="password" label="Choose a password" hint="10 to 256 characters." autocomplete="new-password" :error="FieldError('password')" />
-                                <UiField v-model="setup.repeat" type="password" label="Repeat password" autocomplete="new-password" :error="FieldError('repeat')" />
-                                <div v-if="setup.error" class="rounded-md border border-danger/30 bg-danger/[0.06] px-3.5 py-3 text-small text-fg-2" role="alert">
-                                    <span class="font-semibold text-fg">{{ setup.error.title }}.</span> {{ setup.error.message }}
-                                </div>
-                                <UiButton type="submit" variant="primary" size="lg" block :loading="setup.busy">{{ submitLabel }}</UiButton>
-                            </form>
-                        </section>
-
-                        <section v-else-if="setup.step === 'created'" key="created" aria-labelledby="setup-created">
-                            <h2 id="setup-created" class="text-heading font-bold text-fg">Your account number</h2>
-                            <p class="mt-2 text-fg-2">This number is the only way to sign in. There's no email and no recovery, so store it somewhere safe, like a password manager.</p>
-                            <div class="surface-card mt-6 flex items-center justify-between gap-3 rounded-lg px-5 py-4">
-                                <p class="tech selectable !text-[1.35rem] tracking-[0.06em] text-fg">{{ GroupAccount(setup.created) }}</p>
+                        <div v-else-if="setup.step === 'created'" key="created" class="flex flex-col gap-5">
+                            <div class="number flex items-center justify-between gap-2 rounded-[20px] px-4 py-4">
+                                <p class="tech selectable !text-[1.3rem] tracking-[0.06em] text-fg">{{ GroupAccount(setup.created) }}</p>
                                 <UiCopy :value="setup.created" label="Copy account number" />
                             </div>
-                            <div v-if="setup.error" class="mt-4 rounded-md border border-danger/30 bg-danger/[0.06] px-3.5 py-3 text-small text-fg-2" role="alert">
-                                <span class="font-semibold text-fg">{{ setup.error.title }}.</span> {{ setup.error.message }}
-                            </div>
-                            <UiButton class="mt-6" variant="primary" size="lg" block :loading="setup.busy" @click="ContinueCreated()">{{ setup.busy ? "Signing in" : "I've saved it, continue" }}</UiButton>
-                        </section>
+                            <p class="text-small text-fg-3">There's no email and no recovery. Keep it in a password manager.</p>
+                            <p v-if="setup.error" class="text-small text-[#ff9b95]" role="alert">{{ setup.error.title }}. {{ setup.error.message }}</p>
+                            <UiButton variant="primary" size="lg" block :loading="setup.busy" data-initial @click="ContinueCreated()">{{ setup.busy ? "Signing in" : "I've saved it" }}</UiButton>
+                        </div>
 
-                        <section v-else key="limit" aria-labelledby="setup-limit">
-                            <h2 id="setup-limit" class="text-heading font-bold text-fg">Device limit reached</h2>
-                            <p class="mt-2 text-fg-2">Your account has reached its limit of {{ setup.limit }} devices. Remove one to add this computer.</p>
-                            <ul class="mt-5 overflow-hidden rounded-lg border border-line bg-surface-1">
-                                <li v-for="device in setup.devices" :key="device.id" class="flex items-center gap-3 border-t border-line px-4 py-3 first:border-t-0">
+                        <div v-else key="limit" class="flex flex-col gap-4">
+                            <p class="text-small text-fg-2">Your account has reached its limit of {{ setup.limit }} devices.</p>
+                            <ul class="overflow-hidden rounded-[20px] bg-white/[0.035] ring-1 ring-inset ring-white/[0.07]">
+                                <li v-for="device in setup.devices" :key="device.id" class="flex items-center gap-3 px-4 py-3 [&+&]:border-t [&+&]:border-white/[0.06]">
                                     <span class="min-w-0 flex-1">
                                         <span class="block truncate font-semibold text-fg">{{ device.name }}</span>
-                                        <span class="block text-small text-fg-3">{{ device.online ? "Online now" : "Offline" }} · Added {{ DateText(device.created) }}</span>
+                                        <span class="block text-[0.75rem] text-fg-3">{{ device.online ? "Online now" : "Offline" }} · {{ DateText(device.created) }}</span>
                                     </span>
-                                    <UiButton size="sm" variant="danger" :loading="setup.releasing === device.id" :disabled="setup.releasing !== null && setup.releasing !== device.id" @click="ReleaseDevice(device.id)">
-                                        Remove
-                                    </UiButton>
+                                    <UiButton size="sm" variant="danger" :loading="setup.releasing === device.id" :disabled="setup.releasing !== null && setup.releasing !== device.id" @click="ReleaseDevice(device.id)">Remove</UiButton>
                                 </li>
-                                <li v-if="!setup.devices.length" class="px-4 py-3 text-small text-fg-3">No devices left to remove.</li>
                             </ul>
-                            <div v-if="setup.error" class="mt-4 rounded-md border border-danger/30 bg-danger/[0.06] px-3.5 py-3 text-small text-fg-2" role="alert">
-                                <span class="font-semibold text-fg">{{ setup.error.title }}.</span> {{ setup.error.message }}
-                            </div>
-                            <div class="mt-6 flex gap-2">
+                            <p v-if="setup.error" class="text-small text-[#ff9b95]" role="alert">{{ setup.error.title }}. {{ setup.error.message }}</p>
+                            <div class="flex gap-2">
                                 <UiButton variant="ghost" size="lg" :disabled="setup.busy" @click="LeaveLimit()">Back</UiButton>
                                 <UiButton class="flex-1" variant="primary" size="lg" :loading="setup.busy" :disabled="setup.devices.length >= setup.limit" @click="RetryAfterRelease()">Add this computer</UiButton>
                             </div>
-                        </section>
+                        </div>
                     </Transition>
                 </div>
+
+                <p v-if="setup.step === 'server'" class="foot mt-5 text-small text-fg-3">No server yet? <ExternalLink :href="GUIDE">Host one in a few minutes</ExternalLink></p>
             </main>
         </div>
     </div>
 </template>
+
+<style scoped>
+.globe {
+    animation: globe-in 1400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.intro {
+    animation: intro-in 900ms 150ms var(--ease-veil) both;
+}
+
+.card {
+    background: linear-gradient(180deg, rgb(22 25 50 / 0.82), rgb(11 13 28 / 0.9));
+    box-shadow:
+        0 0 0 1px rgb(255 255 255 / 0.08) inset,
+        0 1px 0 0 rgb(255 255 255 / 0.1) inset,
+        0 40px 100px -40px rgb(0 0 0 / 0.95),
+        0 0 80px -30px rgb(76 55 224 / 0.45);
+    backdrop-filter: blur(18px);
+    animation: intro-in 900ms 300ms var(--ease-veil) both;
+}
+
+.foot {
+    animation: intro-in 900ms 450ms var(--ease-veil) both;
+}
+
+.server-chip {
+    background: rgb(255 255 255 / 0.045);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.07) inset;
+    transition: background 200ms var(--ease-veil);
+}
+
+.server-chip:hover {
+    background: rgb(255 255 255 / 0.08);
+}
+
+.number {
+    background: linear-gradient(180deg, rgb(113 92 255 / 0.16), rgb(76 55 224 / 0.08));
+    box-shadow: 0 0 0 1px rgb(143 127 255 / 0.32) inset;
+}
+
+.switch-mode {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    font-size: var(--text-small);
+    font-weight: 600;
+    color: var(--color-fg-3);
+    transition: color 180ms var(--ease-veil);
+}
+
+.switch-mode:hover {
+    color: var(--color-fg);
+}
+
+.step-forward-enter-active,
+.step-forward-leave-active,
+.step-back-enter-active,
+.step-back-leave-active {
+    transition:
+        opacity 300ms var(--ease-veil),
+        transform 380ms var(--ease-veil),
+        filter 300ms var(--ease-veil);
+}
+
+.step-forward-enter-from,
+.step-back-leave-to {
+    opacity: 0;
+    transform: translateX(36px);
+    filter: blur(4px);
+}
+
+.step-forward-leave-to,
+.step-back-enter-from {
+    opacity: 0;
+    transform: translateX(-36px);
+    filter: blur(4px);
+}
+
+@keyframes globe-in {
+    from {
+        opacity: 0;
+        transform: translateY(12%);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes intro-in {
+    from {
+        opacity: 0;
+        transform: translateY(18px);
+        filter: blur(6px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+        filter: none;
+    }
+}
+</style>

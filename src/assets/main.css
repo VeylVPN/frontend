@@ -8,6 +8,18 @@
     font-display: swap;
 }
 
+@property --sweep {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+}
+
+@property --spin {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+}
+
 @theme {
     --color-*: initial;
     --color-transparent: transparent;
@@ -23,6 +35,9 @@
     --color-surface-3: #141625;
     --color-surface-4: #1b1d31;
 
+    --color-night: #060818;
+    --color-night-2: #0a0e26;
+    --color-glass: rgb(20 23 44 / 0.72);
     --color-base: #05050a;
     --color-elevated: #0a0b14;
     --color-overlay: rgb(3 3 8 / 0.72);

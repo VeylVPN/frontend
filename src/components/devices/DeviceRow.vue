@@ -9,8 +9,6 @@ import IconDevices from "../icons/IconDevices.vue"
 import IconLaptop from "../icons/IconLaptop.vue"
 import IconPencil from "../icons/IconPencil.vue"
 import IconTrash from "../icons/IconTrash.vue"
-import UiBadge from "../ui/UiBadge.vue"
-import UiButton from "../ui/UiButton.vue"
 
 const props = defineProps<{ device: Device; current: boolean; renamable: boolean }>()
 
@@ -48,7 +46,7 @@ async function Save() {
     try {
         await RenameDevice(props.device.id, draft.value)
         editing.value = false
-        Notify("Device renamed", "success")
+        Notify("Renamed", "success")
     } catch (error) {
         problem.value = Describe(error).message
     } finally {
@@ -58,57 +56,88 @@ async function Save() {
 </script>
 
 <template>
-    <li class="flex items-center gap-4 border-t border-line px-5 py-3.5 first:border-t-0">
-        <span class="grid size-10 shrink-0 place-items-center rounded-md border text-[1.15rem]" :class="current ? 'border-line-violet bg-violet-500/[0.1] text-violet-300' : 'border-line bg-surface-2 text-fg-3'">
+    <div class="row group flex items-center gap-3.5 px-4 py-3">
+        <span class="relative grid size-10 shrink-0 place-items-center rounded-[13px] text-[1.1rem]" :class="current ? 'bg-violet-500/20 text-violet-200' : 'bg-white/[0.06] text-fg-3'">
             <component :is="current ? IconLaptop : IconDevices" />
+            <span v-if="device.online" class="absolute -bottom-0.5 -right-0.5 size-3 rounded-full border-2 border-[#0b0d1c] bg-ok" aria-hidden="true" />
         </span>
         <div class="min-w-0 flex-1">
-            <form v-if="editing" class="flex flex-wrap items-center gap-2" @submit.prevent="Save" @keydown.escape.stop="Cancel">
+            <form v-if="editing" class="flex items-center gap-2" @submit.prevent="Save" @keydown.escape.stop="Cancel">
                 <input
                     ref="input"
                     v-model="draft"
-                    class="h-9 min-w-0 flex-1 rounded-md border border-line-2 bg-surface-1 px-3 text-body text-fg outline-none focus:border-violet-400/70"
-                    :class="problem && 'border-danger/60'"
+                    class="h-9 min-w-0 flex-1 rounded-[11px] bg-white/[0.06] px-3 text-body text-fg outline-none ring-1 ring-inset ring-white/10 focus:ring-violet-400/70"
                     maxlength="32"
                     aria-label="Device name"
                     :aria-invalid="problem ? true : undefined"
                     spellcheck="false"
                 />
-                <UiButton size="sm" type="submit" variant="primary" :loading="saving">Save</UiButton>
-                <UiButton size="sm" variant="ghost" :disabled="saving" @click="Cancel">Cancel</UiButton>
-                <p v-if="problem" class="w-full text-small text-[#ff8a84]" role="alert">{{ problem }}</p>
+                <button type="submit" class="h-9 rounded-full bg-white px-3.5 text-small font-bold text-ink-950 disabled:opacity-60" :disabled="saving">{{ saving ? "Saving" : "Save" }}</button>
             </form>
             <template v-else>
-                <p class="flex items-center gap-2">
-                    <span class="truncate font-semibold text-fg">{{ device.name }}</span>
-                    <UiBadge v-if="current" tone="violet">This device</UiBadge>
+                <p class="truncate font-semibold text-fg">
+                    {{ device.name }}<span v-if="current" class="ml-2 text-small font-medium text-violet-300">This computer</span>
                 </p>
-                <p class="mt-0.5 flex items-center gap-1.5 text-small text-fg-3">
-                    <span class="size-1.5 rounded-full" :class="device.online ? 'bg-ok shadow-[0_0_6px_rgb(84_232_112/0.7)]' : 'bg-fg-4'" aria-hidden="true" />
-                    {{ device.online ? "Online now" : "Offline" }}
-                    <span aria-hidden="true">·</span>
-                    Added {{ DateText(device.created) }}
-                </p>
+                <p class="mt-0.5 text-small text-fg-3">{{ device.online ? "Online now" : "Offline" }} · {{ DateText(device.created) }}</p>
             </template>
+            <p v-if="problem" class="mt-1 text-small text-[#ff8a84]" role="alert">{{ problem }}</p>
         </div>
-        <div v-if="!editing" class="flex shrink-0 items-center gap-1">
-            <button
-                v-if="renamable"
-                type="button"
-                class="grid size-9 place-items-center rounded-full text-fg-3 transition-colors duration-150 hover:bg-white/[0.06] hover:text-fg"
-                :aria-label="`Rename ${device.name}`"
-                @click="Edit"
-            >
-                <IconPencil />
-            </button>
-            <button
-                type="button"
-                class="grid size-9 place-items-center rounded-full text-fg-3 transition-colors duration-150 hover:bg-danger/[0.1] hover:text-[#ff8a84]"
-                :aria-label="`Remove ${device.name}`"
-                @click="emit('remove', device)"
-            >
-                <IconTrash />
-            </button>
+        <div v-if="!editing" class="actions flex shrink-0 items-center gap-1">
+            <button v-if="renamable" type="button" class="action" :aria-label="`Rename ${device.name}`" @click="Edit"><IconPencil /></button>
+            <button type="button" class="action danger" :aria-label="`Remove ${device.name}`" @click="emit('remove', device)"><IconTrash /></button>
         </div>
-    </li>
+    </div>
 </template>
+
+<style scoped>
+.row {
+    transition: background 200ms var(--ease-veil);
+}
+
+.row:hover {
+    background: rgb(255 255 255 / 0.025);
+}
+
+.actions {
+    opacity: 0;
+    transform: translateX(6px);
+    transition:
+        opacity 200ms var(--ease-veil),
+        transform 200ms var(--ease-veil);
+}
+
+.row:hover .actions,
+.row:focus-within .actions {
+    opacity: 1;
+    transform: none;
+}
+
+.action {
+    display: grid;
+    width: 2.25rem;
+    height: 2.25rem;
+    place-items: center;
+    border-radius: 999px;
+    color: var(--color-fg-3);
+    transition:
+        background 160ms var(--ease-veil),
+        color 160ms var(--ease-veil);
+}
+
+.action:hover {
+    background: rgb(255 255 255 / 0.07);
+    color: var(--color-fg);
+}
+
+.action.danger:hover {
+    background: rgb(255 90 82 / 0.12);
+    color: #ff8a84;
+}
+
+@media (hover: none) {
+    .actions {
+        opacity: 1;
+        transform: none;
+    }
+}
+</style>
