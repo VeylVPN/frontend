@@ -1,19 +1,45 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use rand_core::OsRng;
-use x25519_dalek::{PublicKey, StaticSecret};
+use rcgen::{CertificateParams, KeyPair};
 
-pub struct Keypair {
-    pub private: String,
-    pub public: String,
+pub const KEY_PLACEHOLDER: &str = "__PRIVATE_KEY__";
+
+pub struct Material {
+    pub key_pem: String,
+    pub csr_pem: String,
 }
 
-pub fn generate() -> Keypair {
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    Keypair {
-        private: STANDARD.encode(secret.to_bytes()),
-        public: STANDARD.encode(public.as_bytes()),
+pub fn generate() -> Result<Material, String> {
+    let key = KeyPair::generate().map_err(|_| "Could not generate key".to_string())?;
+    let params = CertificateParams::new(Vec::<String>::new())
+        .map_err(|_| "Could not generate key".to_string())?;
+    let csr = params
+        .serialize_request(&key)
+        .map_err(|_| "Could not generate key".to_string())?
+        .pem()
+        .map_err(|_| "Could not generate key".to_string())?;
+    Ok(Material {
+        key_pem: key.serialize_pem(),
+        csr_pem: csr,
+    })
+}
+
+pub fn fill_profile(profile: &str, key_pem: &str) -> Result<String, String> {
+    let key = key_pem.trim();
+    let mut found = false;
+    let mut out: Vec<&str> = Vec::new();
+    for line in profile.lines() {
+        if line.trim() == KEY_PLACEHOLDER {
+            found = true;
+            out.push(key);
+        } else {
+            out.push(line);
+        }
     }
+    if !found {
+        return Err("Invalid profile from server".to_string());
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    Ok(s)
 }
 
 #[cfg(test)]
@@ -21,19 +47,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_are_32_bytes_and_distinct() {
-        let a = generate();
-        let b = generate();
-        assert_eq!(STANDARD.decode(&a.private).unwrap().len(), 32);
-        assert_eq!(STANDARD.decode(&a.public).unwrap().len(), 32);
-        assert_ne!(a.private, b.private);
+    fn generates_pem_pair() {
+        let m = generate().unwrap();
+        assert!(m.key_pem.contains("PRIVATE KEY"));
+        assert!(m.csr_pem.contains("CERTIFICATE REQUEST"));
+        let n = generate().unwrap();
+        assert_ne!(m.key_pem, n.key_pem);
     }
 
     #[test]
-    fn public_matches_private() {
-        let k = generate();
-        let raw: [u8; 32] = STANDARD.decode(&k.private).unwrap().try_into().unwrap();
-        let derived = PublicKey::from(&StaticSecret::from(raw));
-        assert_eq!(STANDARD.encode(derived.as_bytes()), k.public);
+    fn substitutes_placeholder_line() {
+        let p = "client\n<key>\n__PRIVATE_KEY__\n</key>\n<tls-crypt>\nx\n</tls-crypt>\n";
+        let out = fill_profile(
+            p,
+            "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        assert!(!out.contains(KEY_PLACEHOLDER));
+        assert!(out.contains(
+            "<key>\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n</key>"
+        ));
+        assert!(out.ends_with("</tls-crypt>\n"));
+    }
+
+    #[test]
+    fn missing_placeholder_is_error() {
+        assert!(fill_profile("client\n", "k").is_err());
     }
 }

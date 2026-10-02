@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 pub struct Profile {
     pub server: String,
     pub account: String,
-    pub public_key: String,
-    pub conf: String,
+    pub password: String,
+    pub device_id: String,
+    pub ovpn: String,
 }
 
 fn file(dir: &Path) -> PathBuf {
@@ -125,12 +126,15 @@ mod tests {
         let p = Profile {
             server: "s".into(),
             account: "1234".into(),
-            public_key: "k".into(),
-            conf: "c".into(),
+            password: "pw".into(),
+            device_id: "d".into(),
+            ovpn: "c".into(),
         };
         save(&dir, &p).unwrap();
         let back = load(&dir).unwrap();
         assert_eq!(back.account, "1234");
+        assert_eq!(back.password, "pw");
+        assert_eq!(back.ovpn, "c");
         clear(&dir);
         assert!(load(&dir).is_none());
         let _ = fs::remove_dir_all(&dir);

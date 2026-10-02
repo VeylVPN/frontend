@@ -2,19 +2,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Device {
-    pub public_key: String,
-    pub address4: String,
+    pub id: String,
+    pub name: String,
+    pub created: u64,
+    pub online: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceList {
+    pub limit: u32,
+    pub devices: Vec<Device>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Enroll {
-    pub address4: String,
-    pub address6: String,
-    pub server_public_key: String,
-    pub endpoint: String,
-    pub dns: String,
+    pub id: String,
+    pub profile: String,
 }
 
 pub fn base_url(server: &str) -> String {
@@ -33,9 +38,25 @@ pub fn host(server: &str) -> String {
         .to_string()
 }
 
+pub fn error_message(status: u16, body: &Value) -> String {
+    if let Some(m) = body["error"].as_str() {
+        if !m.is_empty() {
+            return m.to_string();
+        }
+    }
+    match status {
+        401 => "invalid credentials".to_string(),
+        404 => "Not found".to_string(),
+        409 => "Conflict".to_string(),
+        429 => "Too many attempts, try again later".to_string(),
+        500..=599 => "Server error".to_string(),
+        _ => "Request failed".to_string(),
+    }
+}
+
 pub fn post(server: &str, path: &str, body: Value) -> Result<Value, String> {
     let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(20))
         .redirects(0)
         .build();
     let url = format!("{}{}", base_url(server), path);
@@ -43,42 +64,71 @@ pub fn post(server: &str, path: &str, body: Value) -> Result<Value, String> {
         Ok(r) => r
             .into_json::<Value>()
             .map_err(|_| "Invalid server response".to_string()),
-        Err(ureq::Error::Status(_, r)) => {
+        Err(ureq::Error::Status(code, r)) => {
             let v = r.into_json::<Value>().unwrap_or(Value::Null);
-            Err(v["error"].as_str().unwrap_or("Request failed").to_string())
+            Err(error_message(code, &v))
         }
         Err(_) => Err("Cannot reach that server".to_string()),
     }
 }
 
-pub fn enroll(server: &str, account: &str, public_key: &str) -> Result<Enroll, String> {
+pub fn register(server: &str, account: Option<&str>, password: &str) -> Result<String, String> {
+    let mut body = json!({ "password": password });
+    if let Some(a) = account.filter(|a| !a.trim().is_empty()) {
+        body["account"] = json!(a.trim());
+    }
+    let v = post(server, "/v1/register", body)?;
+    v["account"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Invalid server response".to_string())
+}
+
+pub fn devices(server: &str, account: &str, password: &str) -> Result<DeviceList, String> {
     let v = post(
         server,
-        "/v1/enroll",
-        json!({ "account": account, "public_key": public_key }),
+        "/v1/devices",
+        json!({ "account": account, "password": password }),
     )?;
     serde_json::from_value(v).map_err(|_| "Invalid server response".to_string())
 }
 
-pub fn devices(server: &str, account: &str) -> Result<Vec<Device>, String> {
-    let v = post(server, "/v1/devices", json!({ "account": account }))?;
+pub fn enroll(
+    server: &str,
+    account: &str,
+    password: &str,
+    name: &str,
+    csr_pem: &str,
+) -> Result<Enroll, String> {
+    let v = post(
+        server,
+        "/v1/enroll",
+        json!({ "account": account, "password": password, "name": name, "csr": csr_pem }),
+    )?;
     serde_json::from_value(v).map_err(|_| "Invalid server response".to_string())
 }
 
-pub fn revoke(server: &str, account: &str, public_key: &str) -> Result<(), String> {
+pub fn revoke(server: &str, account: &str, password: &str, id: &str) -> Result<(), String> {
     post(
         server,
         "/v1/revoke",
-        json!({ "account": account, "public_key": public_key }),
+        json!({ "account": account, "password": password, "id": id }),
     )
     .map(|_| ())
 }
 
-pub fn build_config(private_key: &str, e: &Enroll) -> String {
-    format!(
-        "[Interface]\nPrivateKey = {}\nAddress = {}, {}\nDNS = {}\n\n[Peer]\nPublicKey = {}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {}\nPersistentKeepalive = 25\n",
-        private_key, e.address4, e.address6, e.dns, e.server_public_key, e.endpoint
+pub fn change_password(
+    server: &str,
+    account: &str,
+    password: &str,
+    new_password: &str,
+) -> Result<(), String> {
+    post(
+        server,
+        "/v1/password",
+        json!({ "account": account, "password": password, "new_password": new_password }),
     )
+    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -93,17 +143,28 @@ mod tests {
     }
 
     #[test]
-    fn config_has_full_tunnel() {
-        let e = Enroll {
-            address4: "10.66.0.2/32".into(),
-            address6: "fd66:66:66::2/128".into(),
-            server_public_key: "SPK".into(),
-            endpoint: "vpn.example.com:51820".into(),
-            dns: "10.66.0.1,fd66:66:66::1".into(),
-        };
-        let c = build_config("PRIV", &e);
-        assert!(c.contains("PrivateKey = PRIV"));
-        assert!(c.contains("AllowedIPs = 0.0.0.0/0, ::/0"));
-        assert!(c.contains("Endpoint = vpn.example.com:51820"));
+    fn maps_error_bodies() {
+        assert_eq!(
+            error_message(401, &json!({"error": "invalid credentials"})),
+            "invalid credentials"
+        );
+        assert_eq!(
+            error_message(409, &json!({"error": "device limit reached"})),
+            "device limit reached"
+        );
+        assert_eq!(
+            error_message(429, &Value::Null),
+            "Too many attempts, try again later"
+        );
+        assert_eq!(error_message(502, &Value::Null), "Server error");
+        assert_eq!(error_message(400, &json!({"error": ""})), "Request failed");
+    }
+
+    #[test]
+    fn parses_device_list() {
+        let v = json!({"limit":5,"devices":[{"id":"ab","name":"pc","created":1,"online":true}]});
+        let l: DeviceList = serde_json::from_value(v).unwrap();
+        assert_eq!(l.limit, 5);
+        assert!(l.devices[0].online);
     }
 }

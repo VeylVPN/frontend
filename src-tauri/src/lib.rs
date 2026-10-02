@@ -1,9 +1,8 @@
 use serde::Serialize;
-use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Manager, State, WindowEvent};
-use veyl_core::{api, keys, store, tunnel, Profile};
+use tauri::{Manager, RunEvent, State, WindowEvent};
+use veyl_core::{api, keys, store, tunnel, DeviceList, Profile};
 
 #[derive(Default)]
 struct App {
@@ -14,7 +13,7 @@ struct App {
 struct PublicProfile {
     server: String,
     account: String,
-    public_key: String,
+    device_id: String,
 }
 
 impl From<&Profile> for PublicProfile {
@@ -22,7 +21,7 @@ impl From<&Profile> for PublicProfile {
         Self {
             server: p.server.clone(),
             account: p.account.clone(),
-            public_key: p.public_key.clone(),
+            device_id: p.device_id.clone(),
         }
     }
 }
@@ -37,6 +36,36 @@ fn tunnel_dir(app: &tauri::AppHandle) -> PathBuf {
     data_dir(app).join("tunnel")
 }
 
+fn current(app: &tauri::AppHandle, state: &State<'_, App>) -> Result<Profile, String> {
+    let mut guard = state.profile.lock().unwrap();
+    if guard.is_none() {
+        *guard = store::load(&data_dir(app));
+    }
+    guard.clone().ok_or_else(|| "Not signed in".to_string())
+}
+
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn new_profile_text(
+    server: &str,
+    account: &str,
+    password: &str,
+    name: &str,
+) -> Result<(String, String), String> {
+    let m = keys::generate()?;
+    let e = api::enroll(server, account, password, name, &m.csr_pem)?;
+    let ovpn = keys::fill_profile(&e.profile, &m.key_pem)?;
+    Ok((e.id, ovpn))
+}
+
 #[tauri::command]
 fn get_profile(app: tauri::AppHandle, state: State<App>) -> Option<PublicProfile> {
     let mut guard = state.profile.lock().unwrap();
@@ -47,13 +76,21 @@ fn get_profile(app: tauri::AppHandle, state: State<App>) -> Option<PublicProfile
 }
 
 #[tauri::command]
-async fn api_post(server: String, path: String, body: Value) -> Result<Value, String> {
-    if !matches!(path.as_str(), "/v1/devices" | "/v1/revoke") {
-        return Err("Not allowed".into());
-    }
-    tauri::async_runtime::spawn_blocking(move || api::post(&server, &path, body))
-        .await
-        .map_err(|e| e.to_string())?
+async fn register(
+    server: String,
+    account: Option<String>,
+    password: String,
+) -> Result<String, String> {
+    blocking(move || api::register(&server, account.as_deref(), &password)).await
+}
+
+#[tauri::command]
+async fn login_check(
+    server: String,
+    account: String,
+    password: String,
+) -> Result<DeviceList, String> {
+    blocking(move || api::devices(&server, &account, &password)).await
 }
 
 #[tauri::command]
@@ -62,72 +99,109 @@ async fn provision(
     state: State<'_, App>,
     server: String,
     account: String,
+    password: String,
+    name: String,
 ) -> Result<PublicProfile, String> {
     let dir = data_dir(&app);
-    let profile = tauri::async_runtime::spawn_blocking(move || -> Result<Profile, String> {
-        let kp = keys::generate();
-        let e = api::enroll(&server, &account, &kp.public)?;
-        let conf = api::build_config(&kp.private, &e);
+    let profile = blocking(move || {
+        let (device_id, ovpn) = new_profile_text(&server, &account, &password, &name)?;
         let p = Profile {
             server,
             account,
-            public_key: kp.public,
-            conf,
+            password,
+            device_id,
+            ovpn,
         };
         store::save(&dir, &p)?;
         Ok(p)
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await?;
     let out = PublicProfile::from(&profile);
     *state.profile.lock().unwrap() = Some(profile);
     Ok(out)
 }
 
 #[tauri::command]
-async fn new_device_config(state: State<'_, App>) -> Result<String, String> {
-    let (server, account) = {
-        let g = state.profile.lock().unwrap();
-        let p = g.as_ref().ok_or("Not signed in")?;
-        (p.server.clone(), p.account.clone())
-    };
-    tauri::async_runtime::spawn_blocking(move || {
-        let kp = keys::generate();
-        let e = api::enroll(&server, &account, &kp.public)?;
-        Ok(api::build_config(&kp.private, &e))
+async fn list_devices(app: tauri::AppHandle, state: State<'_, App>) -> Result<DeviceList, String> {
+    let p = current(&app, &state)?;
+    blocking(move || api::devices(&p.server, &p.account, &p.password)).await
+}
+
+#[tauri::command]
+async fn add_device_config(
+    app: tauri::AppHandle,
+    state: State<'_, App>,
+    name: String,
+) -> Result<String, String> {
+    let p = current(&app, &state)?;
+    blocking(move || new_profile_text(&p.server, &p.account, &p.password, &name).map(|r| r.1)).await
+}
+
+#[tauri::command]
+async fn revoke_device(
+    app: tauri::AppHandle,
+    state: State<'_, App>,
+    id: String,
+) -> Result<(), String> {
+    let p = current(&app, &state)?;
+    let own = p.device_id == id;
+    let dir = data_dir(&app);
+    let tdir = tunnel_dir(&app);
+    blocking(move || {
+        api::revoke(&p.server, &p.account, &p.password, &id)?;
+        if own {
+            tunnel::disconnect(&tdir);
+            store::clear(&dir);
+        }
+        Ok(())
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?;
+    if own {
+        *state.profile.lock().unwrap() = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn change_password(
+    app: tauri::AppHandle,
+    state: State<'_, App>,
+    new_password: String,
+) -> Result<(), String> {
+    let p = current(&app, &state)?;
+    let dir = data_dir(&app);
+    let updated = blocking(move || {
+        api::change_password(&p.server, &p.account, &p.password, &new_password)?;
+        let mut q = p;
+        q.password = new_password;
+        store::save(&dir, &q)?;
+        Ok(q)
+    })
+    .await?;
+    *state.profile.lock().unwrap() = Some(updated);
+    Ok(())
 }
 
 #[tauri::command]
 async fn connect(app: tauri::AppHandle, state: State<'_, App>) -> Result<(), String> {
-    let conf = state
-        .profile
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|p| p.conf.clone())
-        .ok_or("Not signed in")?;
+    let p = current(&app, &state)?;
     let dir = tunnel_dir(&app);
-    tauri::async_runtime::spawn_blocking(move || tunnel::connect(&dir, &conf))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking(move || tunnel::connect(&dir, &p.ovpn)).await
 }
 
 #[tauri::command]
 async fn disconnect(app: tauri::AppHandle) -> Result<(), String> {
     let dir = tunnel_dir(&app);
-    tauri::async_runtime::spawn_blocking(move || tunnel::disconnect(&dir))
-        .await
-        .map_err(|e| e.to_string())
+    blocking(move || {
+        tunnel::disconnect(&dir);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn status() -> Result<tunnel::Status, String> {
-    tauri::async_runtime::spawn_blocking(tunnel::status)
-        .await
-        .map_err(|e| e.to_string())
+    blocking(|| Ok(tunnel::status())).await
 }
 
 #[tauri::command]
@@ -144,15 +218,15 @@ async fn sign_out(
         .unwrap()
         .take()
         .or_else(|| store::load(&dir));
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         tunnel::disconnect(&tdir);
         if let (true, Some(p)) = (revoke, profile.as_ref()) {
-            let _ = api::revoke(&p.server, &p.account, &p.public_key);
+            let _ = api::revoke(&p.server, &p.account, &p.password, &p.device_id);
         }
         store::clear(&dir);
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -169,24 +243,37 @@ fn window_control(window: tauri::Window, action: String) {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(App::default())
+        .setup(|app| {
+            tunnel::cleanup(&tunnel_dir(app.handle()));
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
-                tunnel::disconnect(&tunnel_dir(window.app_handle()));
+                tunnel::cleanup(&tunnel_dir(window.app_handle()));
             }
         })
         .invoke_handler(tauri::generate_handler![
             get_profile,
-            api_post,
+            register,
+            login_check,
             provision,
-            new_device_config,
+            list_devices,
+            add_device_config,
+            revoke_device,
+            change_password,
             connect,
             disconnect,
             status,
             sign_out,
             window_control
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Veyl");
+        .build(tauri::generate_context!())
+        .expect("failed to build Veyl");
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            tunnel::cleanup(&tunnel_dir(handle));
+        }
+    });
 }
