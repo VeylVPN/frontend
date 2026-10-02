@@ -1,4 +1,18 @@
-const base = import.meta.env.VITE_API_BASE || "";
+let base = "";
+
+export function setServer(server) {
+  const v = (server || "").trim().replace(/\/+$/, "");
+  if (!v) {
+    base = "";
+    return;
+  }
+  base = /^https?:\/\//i.test(v) ? v : `https://${v}`;
+}
+
+export function serverHost() {
+  if (!base) return location.host;
+  return base.replace(/^https?:\/\//i, "");
+}
 
 async function post(path, body) {
   const res = await fetch(base + path, {

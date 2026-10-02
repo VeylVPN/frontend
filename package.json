@@ -6,12 +6,48 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "app": "vite build && electron .",
+    "dist:win": "vite build && electron-builder --win --x64"
   },
   "devDependencies": {
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
   },
   "dependencies": {
     "qrcode-generator": "^1.4.4"
+  },
+  "main": "electron/main.cjs",
+  "description": "Veyl self-hosted VPN client",
+  "author": "Luckyz",
+  "build": {
+    "appId": "net.veyl.client",
+    "productName": "Veyl",
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "requireAdministrator",
+      "artifactName": "Veyl-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": true,
+      "deleteAppDataOnUninstall": true
+    }
   }
 }
