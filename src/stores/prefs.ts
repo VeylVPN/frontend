@@ -8,9 +8,10 @@ export type Prefs = {
     partner: boolean
     conceal: boolean
     motion: boolean
+    mini: boolean
 }
 
-const DEFAULTS: Prefs = { autoconnect: false, tray: false, partner: true, conceal: false, motion: true }
+const DEFAULTS: Prefs = { autoconnect: false, tray: false, partner: true, conceal: false, motion: true, mini: true }
 
 function Read(): Prefs {
     try {
@@ -23,6 +24,7 @@ function Read(): Prefs {
             partner: record.partner !== false,
             conceal: record.conceal === true,
             motion: record.motion !== false,
+            mini: record.mini !== false,
         }
     } catch {
         return { ...DEFAULTS }

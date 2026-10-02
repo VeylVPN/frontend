@@ -1,6 +1,7 @@
 import { watch } from "vue"
 import { Backend, Prepare } from "./backend"
 import { Host } from "./lib/format"
+import { StartMiniLink } from "./mini/publish"
 import { Connect, connection, Toggle, WakeConnection } from "./stores/connection"
 import { StartPartnerWatch } from "./stores/partner"
 import { prefs } from "./stores/prefs"
@@ -37,6 +38,13 @@ export async function Start(): Promise<void> {
     await Prepare()
     const bridge = Backend()
     watch(
+        () => prefs.motion,
+        (motion) => {
+            document.documentElement.dataset.motion = motion ? "full" : "reduced"
+        },
+        { immediate: true },
+    )
+    watch(
         () => prefs.tray,
         (enabled) => bridge.KeepInTray(enabled),
         { immediate: true },
@@ -47,6 +55,10 @@ export async function Start(): Promise<void> {
         { immediate: true },
     )
     StartPartnerWatch()
+    await StartMiniLink()
+    if (bridge.mode === "native") {
+        navigator.locks?.request("veylvpn-awake", () => new Promise(() => {})).catch(() => {})
+    }
     await bridge.OnTray(() => {
         if (session.status === "signedin") {
             void Toggle()

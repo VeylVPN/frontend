@@ -23,6 +23,23 @@
         "resizable": true,
         "center": true,
         "backgroundColor": "#05050a"
+      },
+      {
+        "label": "mini",
+        "title": "VeylVPN mini player",
+        "url": "mini.html",
+        "width": 380,
+        "height": 204,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": true,
+        "backgroundColor": "#060818"
       }
     ],
     "security": {

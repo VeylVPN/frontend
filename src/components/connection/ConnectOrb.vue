@@ -2,7 +2,7 @@
 import { useId } from "vue"
 import type { GlobeTone } from "../../domain"
 
-withDefaults(defineProps<{ tone: GlobeTone; label: string; action: string; disabled?: boolean }>(), { disabled: false })
+withDefaults(defineProps<{ tone: GlobeTone; label: string; action: string; disabled?: boolean; moment?: "lock" | "release" | null }>(), { disabled: false, moment: null })
 
 const emit = defineEmits<{ press: [] }>()
 
@@ -12,12 +12,13 @@ const id = useId()
 </script>
 
 <template>
-    <button type="button" class="orb group relative grid aspect-square place-items-center rounded-full" :data-tone="tone" :aria-label="action" :disabled="disabled" @click="emit('press')">
+    <button type="button" class="orb group relative grid aspect-square place-items-center rounded-full" :data-tone="tone" :data-moment="moment ?? undefined" :aria-label="action" :disabled="disabled" @click="emit('press')">
         <span class="halo absolute -inset-[34%] rounded-full" aria-hidden="true" />
         <span class="track absolute inset-0 rounded-full" aria-hidden="true" />
         <span class="fill absolute inset-0 rounded-full" aria-hidden="true" />
         <span class="arc absolute inset-0 rounded-full" aria-hidden="true" />
         <span class="core absolute inset-[11%] rounded-full" aria-hidden="true" />
+        <span class="spark absolute inset-[11%] rounded-full" aria-hidden="true" />
         <span class="relative flex flex-col items-center gap-[0.7em]" aria-hidden="true">
             <svg class="mark w-[2.5em] overflow-visible" viewBox="0 0 7 4" fill="none" aria-hidden="true">
                 <defs>
@@ -40,7 +41,7 @@ const id = useId()
                     :style="{ '--i': column }"
                 />
             </svg>
-            <span class="relative grid h-[1.3em] min-w-[7em] place-items-center">
+            <span v-if="label" class="relative grid h-[1.3em] min-w-[7em] place-items-center">
                 <Transition name="swap" mode="out-in">
                     <span :key="label" class="label text-[0.92em] font-semibold tracking-[-0.01em]">{{ label }}</span>
                 </Transition>
@@ -224,6 +225,106 @@ const id = useId()
         transform: scale(1.18);
     }
     100% {
+        transform: none;
+    }
+}
+
+.spark {
+    background: radial-gradient(circle, rgb(255 255 255 / 0.95), rgb(190 180 255 / 0.45) 38%, transparent 70%);
+    opacity: 0;
+}
+
+.orb[data-moment="lock"] {
+    animation: lock 1050ms cubic-bezier(0.34, 1.3, 0.64, 1) both;
+}
+
+.orb[data-moment="lock"] .spark {
+    animation: spark 1100ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.orb[data-moment="lock"] .halo {
+    animation: flare 1400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.orb[data-moment="release"] {
+    animation: exhale 950ms var(--ease-veil) both;
+}
+
+.orb[data-moment="release"] .px {
+    animation: fall 950ms var(--ease-veil) both;
+    animation-delay: calc(var(--i) * 45ms);
+}
+
+@keyframes lock {
+    0% {
+        transform: scale(1);
+    }
+    12% {
+        transform: scale(0.9);
+    }
+    46% {
+        transform: scale(1.09);
+    }
+    72% {
+        transform: scale(0.985);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+@keyframes spark {
+    0% {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+    16% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+        transform: scale(1.3);
+    }
+}
+
+@keyframes flare {
+    0% {
+        opacity: 0.55;
+        transform: scale(0.9);
+    }
+    30% {
+        opacity: 1;
+        transform: scale(1.35);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1.05);
+    }
+}
+
+@keyframes exhale {
+    0% {
+        transform: scale(1);
+    }
+    28% {
+        transform: scale(0.93);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+@keyframes fall {
+    0% {
+        opacity: 1;
+        transform: none;
+    }
+    45% {
+        opacity: 0.1;
+        transform: translateY(0.6px) scale(0.6);
+    }
+    100% {
+        opacity: 0.32;
         transform: none;
     }
 }

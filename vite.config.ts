@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import tailwindcss from "@tailwindcss/vite"
 import vue from "@vitejs/plugin-vue"
 import { defineConfig } from "vitest/config"
@@ -21,6 +22,12 @@ export default defineConfig({
         target: "es2022",
         assetsInlineLimit: 0,
         sourcemap: false,
+        rollupOptions: {
+            input: {
+                main: fileURLToPath(new URL("./index.html", import.meta.url)),
+                mini: fileURLToPath(new URL("./mini.html", import.meta.url)),
+            },
+        },
     },
     test: {
         environment: "happy-dom",

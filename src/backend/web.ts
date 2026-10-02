@@ -159,6 +159,9 @@ export function CreateWebBridge(fetcher: typeof fetch = (input, init) => fetch(i
         Tray: () => {},
         KeepInTray: () => {},
         OnTray: async () => () => {},
+        MiniPlayer: () => {},
+        Publish: () => {},
+        OnMini: async () => () => {},
         Open: async (url) => {
             window.open(url, "_blank", "noopener,noreferrer")
         },

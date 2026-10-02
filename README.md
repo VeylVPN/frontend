@@ -14,6 +14,7 @@ The Windows app and web client for a self-hosted VeylVPN server. Enter your serv
 - Content blocking per account (ads, trackers, malware, adult, gambling, social media) through your server's resolver
 - Server page with protocol, TCP fallback, post-quantum key exchange, platform, version and your account's status
 - Kill switch: all traffic outside the tunnel is blocked while connected
+- Mini player: minimize the window or click the tray icon for a compact player that connects, disconnects and shows your status, timer and speeds
 - System tray with status, connect and disconnect, plus optional close to tray
 - Recognizes VeylVPN partner networks (currently CentrixNodes, AS206533) from your VPN exit address
 - Diagnostics you can copy without exposing your account number, password or keys

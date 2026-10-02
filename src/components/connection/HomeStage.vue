@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue"
 import { Backend } from "../../backend"
-import type { GlobeTone } from "../../domain"
+import { CreateStage, OrbLabel, Presence } from "../../composables/stage"
 import { useTween } from "../../composables/tween"
 import { Bytes, Clock, DateText, Host, MaskIp, Rate } from "../../lib/format"
 import { FormatAsn } from "../../partners/registry"
@@ -24,80 +24,58 @@ import IconPartner from "../icons/IconPartner.vue"
 import IconPower from "../icons/IconPower.vue"
 import IconShield from "../icons/IconShield.vue"
 import IconX from "../icons/IconX.vue"
-import ConnectOrb from "./ConnectOrb.vue"
 import ConnectionTimer from "./ConnectionTimer.vue"
+import OrbScene from "./OrbScene.vue"
 import PartnerBadge from "./PartnerBadge.vue"
-import PixelGlobe from "./PixelGlobe.vue"
 import QuickCard from "./QuickCard.vue"
 
 type Message = { key: string; tone: "info" | "warn" | "fail"; text: string; action?: { label: string; run: () => void } }
 
 const native = Backend().tunnel
 const now = ref(Date.now())
-const burst = ref(0)
 const adding = ref(false)
 const leaving = ref(false)
 let ticker: ReturnType<typeof setInterval> | undefined
 
+const stage = CreateStage(() => connection.phase)
+
+watch(
+    () => connection.phase,
+    (phase) => stage.Sync(phase),
+)
+
+const visual = stage.visual
+
 const host = computed(() => session.info?.endpoint ?? Host(session.profile?.server ?? ""))
 const name = computed(() => session.info?.name ?? host.value)
-const live = computed(() => connection.phase === "connected" || connection.phase === "reconnecting")
+const live = computed(() => native && stage.live.value)
 
-const tone = computed<GlobeTone>(() => {
-    if (!native) {
-        return "on"
-    }
-    switch (connection.phase) {
-        case "connected":
-            return "on"
-        case "connecting":
-        case "reconnecting":
-            return "busy"
-        case "error":
-            return "fail"
-        default:
-            return "idle"
-    }
-})
+const label = computed(() => (native ? OrbLabel(visual.value) : "New profile"))
 
-const orb = computed(() => {
+const action = computed(() => {
     if (!native) {
-        return { label: "New profile", action: "Create an OpenVPN profile for a device", tone: "idle" as GlobeTone }
+        return "Create an OpenVPN profile for a device"
     }
     switch (connection.phase) {
         case "connecting":
-            return { label: "Connecting", action: "Cancel connection", tone: tone.value }
+            return "Cancel connection"
         case "connected":
-            return { label: "Connected", action: `Disconnect from ${name.value}`, tone: tone.value }
         case "reconnecting":
-            return { label: "Reconnecting", action: `Disconnect from ${name.value}`, tone: tone.value }
+            return `Disconnect from ${name.value}`
         case "disconnecting":
-            return { label: "Disconnecting", action: "Disconnecting", tone: tone.value }
+            return "Disconnecting"
         case "error":
-            return { label: "Try again", action: `Try connecting to ${name.value} again`, tone: tone.value }
+            return `Try connecting to ${name.value} again`
         default:
-            return { label: "Connect", action: `Connect to ${name.value}`, tone: tone.value }
+            return `Connect to ${name.value}`
     }
 })
 
-const status = computed(() => {
-    switch (connection.phase) {
-        case "connected":
-            return { dot: "bg-on shadow-[0_0_10px_rgb(84_232_112/0.9)]", text: "Protected" }
-        case "connecting":
-            return { dot: "bg-busy animate-pulse", text: "Connecting" }
-        case "reconnecting":
-            return { dot: "bg-busy animate-pulse", text: "Reconnecting" }
-        case "error":
-            return { dot: "bg-fail", text: "Not connected" }
-        default:
-            return { dot: "bg-idle", text: "Not connected" }
-    }
-})
+const status = computed(() => Presence(visual.value))
 
 const elapsed = computed(() => Clock(connection.since && live.value ? now.value - connection.since : 0))
 
-const clock = computed(() => (live.value ? "live" : connection.phase === "connecting" ? "busy" : "idle"))
+const clock = computed(() => (live.value ? "live" : visual.value === "charging" ? "busy" : "idle"))
 
 async function Restart() {
     leaving.value = true
@@ -127,7 +105,7 @@ const message = computed<Message | null>(() => {
     if (phase === "reconnecting") {
         return { key: "reconnecting", tone: "info", text: "Connection interrupted. The kill switch holds your traffic while it recovers." }
     }
-    if (phase !== "idle") {
+    if (phase !== "idle" || visual.value === "releasing") {
         return null
     }
     if (session.orphaned) {
@@ -205,7 +183,7 @@ const blocking = computed(() => {
 })
 
 const announcement = computed(() => {
-    if (connection.phase === "connected") {
+    if (visual.value === "live") {
         return `Protected. Connected to ${name.value}.`
     }
     return message.value ? `${status.value.text}. ${message.value.text}` : status.value.text
@@ -234,29 +212,26 @@ watch(
     { immediate: true },
 )
 
-watch(
-    () => connection.phase,
-    (phase, previous) => {
-        if (phase === "connected" && (previous === "connecting" || previous === "reconnecting")) {
-            burst.value++
-        }
-    },
-)
-
-onBeforeUnmount(() => clearInterval(ticker))
+onBeforeUnmount(() => {
+    clearInterval(ticker)
+    stage.Dispose()
+})
 </script>
 
 <template>
     <section class="stage relative isolate flex h-full flex-col items-center justify-center overflow-hidden px-5" aria-labelledby="stage-heading">
-        <div class="backdrop pointer-events-none absolute inset-0 -z-10" :class="tone === 'on' && 'lit'" aria-hidden="true" />
+        <div class="backdrop pointer-events-none absolute inset-0 -z-10" :class="[stage.tone.value === 'on' && 'lit', visual === 'locking' && 'flare']" aria-hidden="true" />
         <h1 id="stage-heading" class="sr-only">{{ native ? status.text : "Add a device" }}</h1>
 
         <header class="rise relative z-20 flex flex-col items-center pt-[clamp(0.25rem,2vh,1.5rem)] text-center">
-            <ConnectionTimer v-if="native" :value="elapsed" :state="clock" class="text-[clamp(3.3rem,12.5vh,7.25rem)]" />
+            <ConnectionTimer v-if="native" :value="elapsed" :state="clock" :direction="visual === 'releasing' ? 'down' : 'up'" class="text-[clamp(3.3rem,12.5vh,7.25rem)]" />
             <p v-else class="text-[clamp(2.4rem,8vh,4rem)] font-bold leading-none tracking-[-0.04em] text-fg">Add a device</p>
             <div class="mt-[clamp(0.5rem,1.6vh,1rem)] flex flex-wrap items-center justify-center gap-x-3 gap-y-2">
                 <button type="button" class="server group inline-flex items-center gap-2.5 rounded-full py-1.5 pl-2 pr-2.5 text-[1.05rem] font-semibold text-fg" @click="Go('server')">
-                    <span v-if="native" class="size-2 rounded-full transition-[background,box-shadow] duration-500" :class="status.dot" aria-hidden="true" />
+                    <span v-if="native" class="relative grid size-2 place-items-center" aria-hidden="true">
+                        <span v-if="visual === 'locking'" class="ping absolute inset-0 rounded-full bg-on" />
+                        <span class="size-2 rounded-full transition-[background,box-shadow] duration-500" :class="status.dot" />
+                    </span>
                     <span class="sr-only">{{ status.text }}, </span>
                     {{ name }}
                     <IconChevronRight class="text-fg-4 transition-transform duration-300 ease-veil group-hover:translate-x-0.5 group-hover:text-fg-2" />
@@ -267,24 +242,21 @@ onBeforeUnmount(() => clearInterval(ticker))
             </div>
         </header>
 
-        <div class="rise rise-2 relative my-[clamp(0.25rem,1.5vh,1.5rem)] grid max-h-[min(48vh,470px)] min-h-[clamp(140px,26vh,224px)] w-full flex-1 place-items-center">
-            <PixelGlobe :tone="tone" :still="!prefs.motion" class="pointer-events-none absolute left-1/2 top-1/2 w-[clamp(600px,128vh,1280px)] max-w-none -translate-x-1/2 -translate-y-[25%]" />
-            <div class="pointer-events-none absolute left-1/2 top-1/2 aspect-square w-[clamp(140px,26vh,224px)] -translate-x-1/2 -translate-y-1/2" aria-hidden="true">
-                <template v-if="tone === 'busy'">
-                    <span v-for="index in 3" :key="index" class="ripple absolute inset-0 rounded-full" :style="{ animationDelay: `${(index - 1) * 0.9}s` }" />
-                </template>
-                <span v-if="burst" :key="burst" class="burst absolute inset-0 rounded-full" />
-                <span v-if="burst" :key="`flash-${burst}`" class="flash absolute -inset-[45%] rounded-full" />
-            </div>
-            <ConnectOrb
-                :tone="orb.tone"
-                :label="orb.label"
-                :action="orb.action"
-                :disabled="connection.phase === 'disconnecting'"
-                class="relative z-10 w-[clamp(140px,26vh,224px)] text-[clamp(11px,2vh,16.5px)]"
-                @press="Press"
-            />
-        </div>
+        <OrbScene
+            class="rise rise-2 relative my-[clamp(0.25rem,1.5vh,1.5rem)] max-h-[min(48vh,470px)] min-h-[clamp(140px,26vh,224px)] w-full flex-1"
+            :visual="native ? visual : 'live'"
+            :tone="native ? stage.tone.value : 'on'"
+            :streams="native ? stage.streams.value : 'off'"
+            :wave="native ? stage.wave.value : null"
+            :label="label"
+            :action="action"
+            size="clamp(140px,26vh,224px)"
+            globe="clamp(600px,128vh,1280px)"
+            :lift="0.25"
+            :still="!prefs.motion"
+            :disabled="connection.phase === 'disconnecting'"
+            @press="Press"
+        />
 
         <div class="rise rise-3 relative z-20 flex min-h-[3.25rem] flex-col items-center justify-center gap-2">
             <Transition name="swap" mode="out-in">
@@ -303,16 +275,16 @@ onBeforeUnmount(() => clearInterval(ticker))
                 </div>
             </Transition>
             <Transition name="swap" mode="out-in">
-                <button v-if="native && connection.phase === 'connecting'" key="cancel" type="button" class="pill" @click="Disconnect()"><IconX />Cancel connection</button>
+                <button v-if="native && visual === 'charging'" key="cancel" type="button" class="pill" @click="Disconnect()"><IconX />Cancel connection</button>
                 <button v-else-if="native && live" key="disconnect" type="button" class="pill" @click="Disconnect()"><IconPower />Disconnect</button>
-                <button v-else-if="native && connection.phase === 'error'" key="dismiss" type="button" class="pill" @click="DismissConnection()"><IconX />Dismiss</button>
-                <button v-else-if="native && connection.dropped && connection.phase === 'idle'" key="reconnect" type="button" class="pill" @click="Connect()"><IconPower />Reconnect</button>
+                <button v-else-if="native && visual === 'fail'" key="dismiss" type="button" class="pill" @click="DismissConnection()"><IconX />Dismiss</button>
+                <button v-else-if="native && connection.dropped && visual === 'idle'" key="reconnect" type="button" class="pill" @click="Connect()"><IconPower />Reconnect</button>
             </Transition>
         </div>
 
         <div class="relative z-20 w-full max-w-[42rem] pb-[clamp(0.75rem,3vh,1.75rem)] pt-[clamp(0.5rem,1.6vh,1.25rem)]">
-            <Transition name="fade" mode="out-in">
-                <div v-if="native && live" key="live" class="stagger grid grid-cols-3 gap-3 max-[520px]:gap-2">
+            <Transition name="cards" mode="out-in">
+                <div v-if="live" key="live" class="stagger grid grid-cols-3 gap-3 max-[520px]:gap-2">
                     <QuickCard :icon="IconArrowDown" label="Received" :value="Bytes(received)" :sub="connection.phase === 'connected' ? Rate(connection.down) : 'Paused'" style="--i: 0" />
                     <QuickCard :icon="IconArrowUp" label="Sent" :value="Bytes(sent)" :sub="connection.phase === 'connected' ? Rate(connection.up) : 'Paused'" style="--i: 1" />
                     <QuickCard :icon="network.icon" :label="network.label" :value="network.value" :sub="exit" :accent="network.accent" action="Exit network" style="--i: 2" @press="Go('server', 'exit')" />
@@ -343,20 +315,35 @@ onBeforeUnmount(() => clearInterval(ticker))
     background:
         radial-gradient(70% 55% at 50% 62%, rgb(32 44 150 / 0.32), transparent 70%),
         radial-gradient(120% 90% at 50% 120%, #0d1440 0%, #070a1c 48%, var(--color-base) 100%);
-    transition: opacity 900ms var(--ease-veil);
 }
 
 .backdrop::after {
     content: "";
     position: absolute;
     inset: 0;
-    background: radial-gradient(50% 42% at 50% 58%, rgb(113 92 255 / 0.22), transparent 70%);
+    background: radial-gradient(50% 42% at 50% 52%, rgb(113 92 255 / 0.24), transparent 70%);
     opacity: 0;
-    transition: opacity 1200ms var(--ease-veil);
+    transition: opacity 1400ms var(--ease-veil);
 }
 
 .backdrop.lit::after {
     opacity: 1;
+}
+
+.backdrop::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(38% 34% at 50% 46%, rgb(214 208 255 / 0.32), rgb(113 92 255 / 0.12) 45%, transparent 75%);
+    opacity: 0;
+}
+
+.backdrop.flare::before {
+    animation: flare 1.6s 100ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ping {
+    animation: ping 1.1s 150ms cubic-bezier(0, 0, 0.2, 1) both;
 }
 
 .server {
@@ -427,22 +414,25 @@ onBeforeUnmount(() => clearInterval(ticker))
     transform: scale(0.97);
 }
 
-.ripple {
-    border: 1.5px solid rgb(179 168 255 / 0.5);
-    box-shadow: 0 0 30px -6px rgb(113 92 255 / 0.7);
+.cards-enter-active {
+    transition: opacity 200ms var(--ease-veil);
+}
+
+.cards-leave-active {
+    transition:
+        opacity 260ms var(--ease-veil),
+        transform 260ms var(--ease-veil),
+        filter 260ms var(--ease-veil);
+}
+
+.cards-enter-from {
     opacity: 0;
-    animation: ripple 2.7s cubic-bezier(0.2, 0.6, 0.35, 1) infinite;
 }
 
-.burst {
-    border: 2px solid rgb(232 228 255 / 0.9);
-    box-shadow: 0 0 50px 4px rgb(143 127 255 / 0.7);
-    animation: burst 1.2s 650ms var(--ease-veil) both;
-}
-
-.flash {
-    background: radial-gradient(circle, rgb(160 146 255 / 0.5), rgb(82 107 255 / 0.15) 45%, transparent 70%);
-    animation: flash 1.5s 600ms var(--ease-veil) both;
+.cards-leave-to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+    filter: blur(4px);
 }
 
 @keyframes rise-in {
@@ -458,42 +448,26 @@ onBeforeUnmount(() => clearInterval(ticker))
     }
 }
 
-@keyframes ripple {
+@keyframes flare {
     0% {
-        opacity: 0.75;
+        opacity: 0;
+    }
+    18% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+    }
+}
+
+@keyframes ping {
+    0% {
+        opacity: 0.8;
         transform: scale(1);
     }
     100% {
         opacity: 0;
-        transform: scale(2.9);
-    }
-}
-
-@keyframes burst {
-    0% {
-        opacity: 0;
-        transform: scale(0.95);
-    }
-    8% {
-        opacity: 1;
-    }
-    100% {
-        opacity: 0;
-        transform: scale(3.6);
-    }
-}
-
-@keyframes flash {
-    0% {
-        opacity: 0;
-        transform: scale(0.5);
-    }
-    25% {
-        opacity: 1;
-    }
-    100% {
-        opacity: 0;
-        transform: scale(1.4);
+        transform: scale(4.5);
     }
 }
 </style>

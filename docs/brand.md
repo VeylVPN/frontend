@@ -22,13 +22,20 @@ One stage, no dashboard frame: the globe and ring are the app. Server, Devices a
 ## Motion
 
 - Launch: the wordmark pixels assemble, the stage rises in.
-- Connect: ripples spread from the ring and the globe spins up; when the tunnel is up the ring fill sweeps closed, a shockwave fires, the timer digits roll in and the cards change over with a stagger.
+- Connect: rings close in on the orb and particles stream toward it while the globe speeds up. The charge lasts at least 1.4 s even when the tunnel is instant. When the tunnel is up the particles snap into the orb, a shockwave fires, the globe makes a full turn while a wave of light crosses it, the ring fill sweeps closed, the timer digits roll in and the cards change over with a stagger.
+- Disconnect: the orb exhales, particles blow outward, the ring unwinds, the globe dims behind a wave of shadow and the timer rolls back to zero. The release always plays in full before the stage settles.
+- Protected: the globe keeps turning slowly and a light orbits it.
 - Timer: each digit rolls on its own like an odometer. Traffic totals tween between real readings.
 - Panels slide in with their sections staggered; cards lift with a cursor spotlight; switches overshoot slightly.
 
 - 150 to 250 ms for controls, 900 ms for connection changes, eased with `--ease-veil` like the website.
 - Motion is mostly `transform` and `opacity`. The exceptions are the ring fill sweep (an animated angle) and short blur fades on state text, and they only run during state changes.
-- The globe redraws at 60 fps while connecting and 24 fps while protected. It does not redraw when idle, hidden, minimized or in the tray, with reduced motion, or with "Animate the globe" off.
+- The globe redraws at 60 fps while connecting and 30 fps while protected. It does not redraw when idle, hidden, minimized or in the tray.
+- Motion follows the app setting, not the Windows animation effects switch, because many machines have that off by default. Settings, Reduce motion stops the globe, particles and transitions.
+
+## Mini player
+
+A 380 by 204 window with the same stage in a square tile: globe, orb, particles and the full connect and disconnect sequence, beside the status, timer, server name, partner badge and live speeds. It opens bottom right of the work area when the main window is minimized and closes again when the window comes back. Clicking the tray icon toggles it. Its buttons open the main window on Server, Devices or Settings. Windows does not let apps draw their own UI in the taskbar right click menu, so the mini player lives in its own window instead.
 
 ## Keeping them aligned
 

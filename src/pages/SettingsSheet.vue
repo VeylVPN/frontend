@@ -78,6 +78,9 @@ onMounted(async () => {
         <ListRow label="Keep running in the tray" hint="Closing the window keeps you connected.">
             <UiSwitch v-model="prefs.tray" label="Keep running in the tray" />
         </ListRow>
+        <ListRow label="Mini player" hint="Opens a compact player when you minimize the window or click the tray icon.">
+            <UiSwitch v-model="prefs.mini" label="Mini player" />
+        </ListRow>
         <ListRow label="Kill switch" hint="Blocks traffic outside the tunnel while connected.">
             <span class="text-small font-semibold text-ok">Always on</span>
         </ListRow>
@@ -94,8 +97,8 @@ onMounted(async () => {
         <ListRow label="Hide IP addresses" hint="For screenshots and streams.">
             <UiSwitch v-model="prefs.conceal" label="Hide IP addresses" />
         </ListRow>
-        <ListRow label="Animate the globe">
-            <UiSwitch v-model="prefs.motion" label="Animate the globe" />
+        <ListRow label="Reduce motion" hint="Stops the globe, particles and transitions.">
+            <UiSwitch :model-value="!prefs.motion" label="Reduce motion" @update:model-value="prefs.motion = !$event" />
         </ListRow>
     </ListGroup>
 

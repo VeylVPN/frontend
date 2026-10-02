@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { MotionReduced } from "../../lib/motion"
+import type { Wave } from "../../composables/stage"
 import type { GlobeTone } from "../../domain"
 import { LAND_HEIGHT, LAND_MASK, LAND_WIDTH } from "./landmask"
 
-const props = withDefaults(defineProps<{ tone: GlobeTone; orbit?: boolean; still?: boolean }>(), { orbit: true, still: false })
+const props = withDefaults(defineProps<{ tone: GlobeTone; orbit?: boolean; still?: boolean; wave?: Wave | null; focus?: [number, number] }>(), {
+    orbit: true,
+    still: false,
+    wave: null,
+    focus: () => [0.5, 0.5],
+})
 
 type Rgb = [number, number, number]
 
@@ -21,7 +28,7 @@ const PALETTES: Record<GlobeTone, Palette> = {
 const MOTION: Record<GlobeTone, Motion> = {
     idle: { spin: 0, comet: 0, fps: 0 },
     busy: { spin: 0.34, comet: 2.4, fps: 60 },
-    on: { spin: 0.035, comet: 0.55, fps: 24 },
+    on: { spin: 0.13, comet: 0.6, fps: 30 },
     fail: { spin: 0, comet: 0, fps: 0 },
 }
 
@@ -33,6 +40,9 @@ const SHADES = 10
 const LEVELS = 12
 const BLEND = 800
 const TRAIL = 26
+const WAVE_TIME = 1700
+const SPIN_IN = { amount: Math.PI * 2, ms: 2100 }
+const SPIN_OUT = { amount: Math.PI * 0.45, ms: 1500 }
 
 const host = ref<HTMLDivElement | null>(null)
 const canvas = ref<HTMLCanvasElement | null>(null)
@@ -56,6 +66,8 @@ let blend = 1
 let started = 0
 let glow: HTMLCanvasElement | null = null
 let glowKey = ""
+let impulse: { at: number; amount: number; ms: number; applied: number } | null = null
+let surge = { radius: -1, band: 1, gain: 0, x: 0, y: 0 }
 const buckets: number[][][] = Array.from({ length: SHADES }, () => Array.from({ length: LEVELS }, () => []))
 
 function Normalize(vector: Rgb): Rgb {
@@ -76,7 +88,7 @@ function Rgba(color: Rgb, alpha: number): string {
 }
 
 function Reduced(): boolean {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    return MotionReduced()
 }
 
 function Mask(): Uint8Array {
@@ -273,8 +285,17 @@ function Dots(points: Float32Array, isLand: boolean, palette: Palette, cx: numbe
         if (level < 1 && isLand) {
             continue
         }
-        const size = isLand ? unit * (1.05 + depth * 0.6 + shine * 0.7) : unit * (0.7 + depth * 0.35)
-        buckets[Math.round(shine * (SHADES - 1))]?.[Math.max(0, level)]?.push(cx + rx * radius - size / 2, cy - ry * radius - size / 2, size)
+        const sx = cx + rx * radius
+        const sy = cy - ry * radius
+        let boost = 0
+        if (surge.radius >= 0) {
+            const offset = (Math.hypot(sx - surge.x, sy - surge.y) - surge.radius) / surge.band
+            boost = surge.gain * Math.exp(-offset * offset) * (isLand ? 1 : 0.55)
+        }
+        const lit = Math.min(1, shine + boost)
+        const glowing = Math.min(LEVELS - 1, level + Math.round(boost * LEVELS * 0.7))
+        const size = (isLand ? unit * (1.05 + depth * 0.6 + shine * 0.7) : unit * (0.7 + depth * 0.35)) * (1 + boost * 0.9)
+        buckets[Math.round(lit * (SHADES - 1))]?.[Math.max(0, glowing)]?.push(sx - size / 2, sy - size / 2, size)
     }
 }
 
@@ -296,6 +317,25 @@ function Flush(context: CanvasRenderingContext2D, colors: string[][]) {
     })
 }
 
+function Surge(radius: number) {
+    const wave = props.wave
+    const elapsed = wave ? performance.now() - wave.at : WAVE_TIME
+    if (!wave || elapsed < 0 || elapsed >= WAVE_TIME) {
+        surge.radius = -1
+        return
+    }
+    const k = elapsed / WAVE_TIME
+    const eased = 1 - (1 - k) ** 2.4
+    const reach = radius * 2.1
+    surge = {
+        radius: (wave.kind === "in" ? eased : 1 - eased) * reach,
+        band: radius * (wave.kind === "in" ? 0.15 : 0.12),
+        gain: (wave.kind === "in" ? 1.15 : 0.8) * Math.sin(Math.PI * Math.min(1, k * 1.15)),
+        x: width * props.focus[0],
+        y: height * props.focus[1],
+    }
+}
+
 function Draw() {
     const context = canvas.value?.getContext("2d")
     if (!context || !width) {
@@ -308,6 +348,7 @@ function Draw() {
     const cy = height / 2
     context.setTransform(1, 0, 0, 1, 0, 0)
     context.clearRect(0, 0, context.canvas.width, context.canvas.height)
+    Surge(radius)
     context.setTransform(ratio, 0, 0, ratio, 0, 0)
     Orbit(context, palette, cx, cy, radius, false)
     context.setTransform(1, 0, 0, 1, 0, 0)
@@ -334,9 +375,19 @@ function Tick(now: number) {
         orbitSpeed = 0
     }
     angle += delta * spin
+    if (impulse) {
+        const k = Math.min(1, (now - impulse.at) / impulse.ms)
+        const eased = 1 - (1 - k) ** 4
+        angle += (eased - impulse.applied) * impulse.amount
+        impulse.applied = eased
+        if (k >= 1) {
+            impulse = null
+        }
+    }
+    const waving = Boolean(props.wave && now - props.wave.at < WAVE_TIME)
     comet += delta * orbitSpeed
     blend = Math.min(1, (now - started) / BLEND)
-    const settling = blend < 1 || spin !== motion.spin || orbitSpeed !== motion.comet
+    const settling = blend < 1 || spin !== motion.spin || orbitSpeed !== motion.comet || impulse !== null || waving
     const fps = settling ? 60 : motion.fps
     if (fps && now - drawn >= 1000 / fps - 2) {
         drawn = now
@@ -369,6 +420,20 @@ function OnVisibility() {
         Wake()
     }
 }
+
+watch(
+    () => props.wave,
+    (wave) => {
+        if (!wave || Reduced()) {
+            return
+        }
+        const kick = wave.kind === "in" ? SPIN_IN : SPIN_OUT
+        if (!props.still) {
+            impulse = { at: wave.at, amount: kick.amount, ms: kick.ms, applied: 0 }
+        }
+        Wake()
+    },
+)
 
 watch(
     () => props.still,

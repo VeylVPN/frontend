@@ -1,4 +1,5 @@
 import { onBeforeUnmount, ref, watch } from "vue"
+import { MotionReduced } from "../lib/motion"
 
 export function useTween(source: () => number, ms = 700) {
     const value = ref(source())
@@ -16,7 +17,7 @@ export function useTween(source: () => number, ms = 700) {
 
     watch(source, (next) => {
         cancelAnimationFrame(frame)
-        if (document.hidden || next < value.value || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        if (document.hidden || next < value.value || MotionReduced()) {
             value.value = next
             frame = 0
             return

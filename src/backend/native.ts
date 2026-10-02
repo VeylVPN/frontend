@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { emitTo, listen } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { type Bridge, ToBridgeError } from "./bridge"
 
@@ -43,6 +43,11 @@ export function CreateNativeBridge(): Bridge {
         Tray: (status, action, enabled) => Quiet("tray_status", { status, action, enabled }),
         KeepInTray: (enabled) => Quiet("set_close_to_tray", { enabled }),
         OnTray: (handler) => listen("tray-toggle", () => handler()),
+        MiniPlayer: (enabled) => Quiet("set_mini_player", { enabled }),
+        Publish: (snapshot) => {
+            emitTo("mini", "mini-state", snapshot).catch(() => {})
+        },
+        OnMini: (handler) => listen("mini-request", (event) => handler(event.payload)),
         Open: async (url) => {
             try {
                 await openUrl(url)

@@ -32,6 +32,7 @@ What the app can do comes from two places that this interface does not change: t
 | Auto-connect | No server setting | Frontend preference calls `connect` at launch | Settings | Integrated |
 | Close to tray | No | IPC `set_close_to_tray`, tray in `src-tauri` | Settings | Integrated (new, opt-in) |
 | Tray status and toggle | No | `src-tauri` tray, `tray_status`, `tray-toggle` event | Tray menu | Integrated (new) |
+| Mini player | No | `mini` window, IPC `set_mini_player`, `mini_open`, `mini_hide`, events `mini-state` and `mini-request` | Shown on minimize and tray click, Settings switch | Integrated (new, on by default) |
 | Single instance | No | `tauri-plugin-single-instance` | Second launch focuses the window | Integrated (new) |
 | VPN exit IP and ASN | Not in backend | RIPEstat through the tunnel | Cards, Server page, diagnostics | Integrated (opt-out) |
 | Partner network | Not in backend | `src/partners/registry.ts` | Badge, details, diagnostics | Integrated |

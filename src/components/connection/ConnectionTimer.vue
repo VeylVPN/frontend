@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue"
 
-const props = defineProps<{ value: string; state: "idle" | "busy" | "live" }>()
+const props = withDefaults(defineProps<{ value: string; state: "idle" | "busy" | "live"; direction?: "up" | "down" }>(), { direction: "up" })
 
 const chars = computed(() => [...props.value].map((char, index) => ({ char, index, colon: char === ":", tail: index >= props.value.length - 2 })))
 </script>
@@ -9,9 +9,9 @@ const chars = computed(() => [...props.value].map((char, index) => ({ char, inde
 <template>
     <p class="odometer flex items-center justify-center font-bold leading-none tracking-[-0.04em]" :data-state="state" aria-hidden="true">
         <template v-for="item in chars" :key="item.index">
-            <span v-if="item.colon" class="colon">:</span>
+            <span v-if="item.colon" class="colon" :style="{ '--i': item.index }">:</span>
             <span v-else class="cell" :class="item.tail && 'tail'" :style="{ '--i': item.index }">
-                <Transition name="roll">
+                <Transition :name="`roll-${direction}`">
                     <span :key="item.char" class="digit">{{ item.char }}</span>
                 </Transition>
             </span>
@@ -41,9 +41,10 @@ const chars = computed(() => [...props.value].map((char, index) => ({ char, inde
     place-items: center;
     color: var(--color-white);
     transition:
-        color 700ms var(--ease-veil),
-        opacity 700ms var(--ease-veil),
-        text-shadow 700ms var(--ease-veil);
+        color 620ms var(--ease-veil),
+        opacity 620ms var(--ease-veil),
+        text-shadow 620ms var(--ease-veil);
+    transition-delay: calc(var(--i, 0) * 55ms);
 }
 
 .tail .digit {
@@ -80,21 +81,25 @@ const chars = computed(() => [...props.value].map((char, index) => ({ char, inde
     text-shadow: 0 0 40px rgb(143 127 255 / 0.25);
 }
 
-.roll-enter-active,
-.roll-leave-active {
+.roll-up-enter-active,
+.roll-up-leave-active,
+.roll-down-enter-active,
+.roll-down-leave-active {
     transition:
         transform 420ms var(--ease-veil),
         opacity 420ms var(--ease-veil),
         filter 420ms var(--ease-veil);
 }
 
-.roll-enter-from {
+.roll-up-enter-from,
+.roll-down-leave-to {
     transform: translateY(70%);
     opacity: 0;
     filter: blur(3px);
 }
 
-.roll-leave-to {
+.roll-up-leave-to,
+.roll-down-enter-from {
     transform: translateY(-70%);
     opacity: 0;
     filter: blur(3px);

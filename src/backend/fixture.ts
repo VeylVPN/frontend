@@ -260,6 +260,9 @@ export function CreateFixtureBridge(scenario: string): Bridge {
         Tray: () => {},
         KeepInTray: () => {},
         OnTray: async () => () => {},
+        MiniPlayer: () => {},
+        Publish: () => {},
+        OnMini: async () => () => {},
         Open: async (url) => {
             window.open(url, "_blank", "noopener,noreferrer")
         },

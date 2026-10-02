@@ -1,4 +1,5 @@
 import type { Mode } from "../domain"
+import type { MiniSnapshot } from "../mini/types"
 
 export type WindowAction = "min" | "max" | "close"
 
@@ -58,5 +59,8 @@ export interface Bridge {
     Tray(status: string, action: string, enabled: boolean): void
     KeepInTray(enabled: boolean): void
     OnTray(handler: () => void): Promise<() => void>
+    MiniPlayer(enabled: boolean): void
+    Publish(snapshot: MiniSnapshot): void
+    OnMini(handler: (request: unknown) => void): Promise<() => void>
     Open(url: string): Promise<void>
 }
