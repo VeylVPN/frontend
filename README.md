@@ -1,26 +1,26 @@
 # Veyl
 
-Windows app and web client for a self-hosted Veyl VPN server. Enter your server's domain and your account number, press Connect.
+Windows app and web client for a self-hosted Veyl VPN server. Enter your server's domain, sign in with your account number and password, press Connect.
 
 ## Features
 
 - One-tap connect with a live pixel status wave: orange when exposed, green when protected
 - Session timer, data received and live speed
-- Account number sign-in, no email or password
-- Works with any Veyl server on your own domain
+- Account number and password sign-in, no email
+- Create an account on your own server, or claim a number your server admin gave you
+- See every device on your account, which ones are online right now, and remove any of them instantly
+- Add phones and other computers with a downloadable OpenVPN profile (up to 5 devices)
+- Every device has its own certificate, generated on that device; the server never sees a private key
 - Kill switch: all traffic outside the tunnel is blocked while connected
-- Add phones and other computers with a QR code (up to 5 devices)
-- Keys generated on your device; the private key never leaves it
-- Profile stored encrypted with Windows DPAPI; the private key never enters the web layer
+- Profile and password stored encrypted with Windows DPAPI; the private key and password never enter the web layer
 - Native Rust core on Tauri: a few MB installer, low memory, no bundled browser
-- Disconnects cleanly on exit
 - Web version served by the backend for quick setup from any browser
 
 ## How it works
 
-The app is a Tauri shell around a Rust core (`core/`). The core generates the WireGuard keys, talks to your server, stores the profile and controls the tunnel; the web layer only draws the interface.
+The app is a Tauri shell around a Rust core (`core/`). The core generates the device key and certificate request, talks to your server, stores the profile and controls the tunnel; the web layer only draws the interface.
 
-It drives the official WireGuard for Windows tunnel service. On first connect it downloads WireGuard from download.wireguard.com, checks the SHA-256 against a pinned value and the Microsoft Authenticode signature, then installs it. The app requests administrator rights because creating a network tunnel requires them.
+It drives the official OpenVPN community client. On first connect it downloads OpenVPN from swupdate.openvpn.net, checks the SHA-256 against a pinned value and the Authenticode signature, then installs it. The app requests administrator rights because creating a network tunnel requires them.
 
 ## Download
 
