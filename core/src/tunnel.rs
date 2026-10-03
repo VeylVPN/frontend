@@ -19,6 +19,12 @@ const TUNNEL_RANGES: &str = "10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89:
 const PROFILE_FILE: &str = "veyl.ovpn";
 const PASSWORD_FILE: &str = "veyl.mgmt";
 const LOG_FILE: &str = "veyl.log";
+const ADAPTER: &str = "Veyl";
+const DRIVERS: [(&str, &str); 3] = [
+    ("ovpn-dco", "ovpn-dco"),
+    ("wintun", "wintun"),
+    ("root\\tap0901", "tap-windows6"),
+];
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -54,12 +60,43 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-fn openvpn_exe() -> PathBuf {
+fn openvpn_bin(name: &str) -> PathBuf {
     let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
-    PathBuf::from(pf)
-        .join("OpenVPN")
-        .join("bin")
-        .join("openvpn.exe")
+    PathBuf::from(pf).join("OpenVPN").join("bin").join(name)
+}
+
+fn openvpn_exe() -> PathBuf {
+    openvpn_bin("openvpn.exe")
+}
+
+pub fn adapter_listed(list: &str, name: &str) -> bool {
+    list.lines().any(|l| {
+        l.split('\t')
+            .nth(1)
+            .is_some_and(|n| n.trim().eq_ignore_ascii_case(name))
+    })
+}
+
+fn ensure_adapter() -> Option<&'static str> {
+    let tapctl = openvpn_bin("tapctl.exe");
+    for (hwid, driver) in DRIVERS {
+        if let Some(list) = run(&tapctl, &strings(&["list", "--hwid", hwid])) {
+            if adapter_listed(&list, ADAPTER) {
+                return Some(driver);
+            }
+        }
+    }
+    for (hwid, driver) in DRIVERS {
+        if run(
+            &tapctl,
+            &strings(&["create", "--name", ADAPTER, "--hwid", hwid]),
+        )
+        .is_some()
+        {
+            return Some(driver);
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -282,8 +319,14 @@ pub fn parse_load_stats(out: &str) -> (u64, u64) {
     (rx, tx)
 }
 
-pub fn openvpn_args(profile: &Path, port: u16, pwfile: &Path, log: &Path) -> Vec<String> {
-    vec![
+pub fn openvpn_args(
+    profile: &Path,
+    port: u16,
+    pwfile: &Path,
+    log: &Path,
+    driver: Option<&str>,
+) -> Vec<String> {
+    let mut a: Vec<String> = vec![
         "--config".into(),
         profile.display().to_string(),
         "--management".into(),
@@ -292,7 +335,16 @@ pub fn openvpn_args(profile: &Path, port: u16, pwfile: &Path, log: &Path) -> Vec
         pwfile.display().to_string(),
         "--log".into(),
         log.display().to_string(),
-    ]
+    ];
+    if let Some(d) = driver {
+        a.extend([
+            "--dev-node".into(),
+            ADAPTER.into(),
+            "--windows-driver".into(),
+            d.into(),
+        ]);
+    }
+    a
 }
 
 pub fn pin_remotes<F>(ovpn: &str, resolve: F) -> Result<String, String>
@@ -336,13 +388,51 @@ fn resolve_host(host: &str, port: u16) -> Option<IpAddr> {
         .copied()
 }
 
+fn strip_timestamp(line: &str) -> &str {
+    let b = line.as_bytes();
+    if b.len() > 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b' '
+        && b[13] == b':'
+        && b[16] == b':'
+        && b[19] == b' '
+    {
+        &line[20..]
+    } else {
+        line
+    }
+}
+
 pub fn failure_reason(log: &str) -> Option<String> {
-    let line = log.lines().rev().map(str::trim).find(|l| {
+    let generic = |l: &str| {
         let l = l.to_ascii_lowercase();
-        l.contains("error") || l.contains("fatal") || l.contains("failed")
-    })?;
-    let text: String = line.chars().take(240).collect();
-    Some(text)
+        l.starts_with("exiting due to fatal error")
+            || l.starts_with("use --help")
+            || l.contains("sigterm")
+            || l.contains("sigint")
+            || l.starts_with("closing tun")
+    };
+    let lines: Vec<&str> = log
+        .lines()
+        .map(|l| strip_timestamp(l.trim()))
+        .filter(|l| !l.is_empty())
+        .collect();
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| {
+            let lower = l.to_ascii_lowercase();
+            !generic(l)
+                && (lower.contains("error")
+                    || lower.contains("fatal")
+                    || lower.contains("failed")
+                    || lower.contains("cannot")
+                    || lower.contains("there are no")
+                    || lower.contains("in use"))
+        })
+        .or_else(|| lines.iter().rev().find(|l| !generic(l)))?;
+    Some(line.chars().take(240).collect())
 }
 
 fn random_hex(bytes: usize) -> String {
@@ -447,12 +537,17 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     fs::write(&pwfile, &password).map_err(|e| e.to_string())?;
     restrict(&pwfile);
     let exe = openvpn_exe();
+    let driver = if cfg!(windows) {
+        ensure_adapter()
+    } else {
+        None
+    };
     if !kill_switch_on(&exe) {
         remove_files(dir);
         return Err("Could not enable the kill switch. Run Veyl as administrator.".into());
     }
     let child = command(&exe)
-        .args(openvpn_args(&profile, port, &pwfile, &log))
+        .args(openvpn_args(&profile, port, &pwfile, &log, driver))
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -593,7 +688,13 @@ mod tests {
 
     #[test]
     fn openvpn_command_line() {
-        let a = openvpn_args(Path::new("a.ovpn"), 4242, Path::new("pw"), Path::new("l"));
+        let a = openvpn_args(
+            Path::new("a.ovpn"),
+            4242,
+            Path::new("pw"),
+            Path::new("l"),
+            None,
+        );
         assert_eq!(
             a,
             vec![
@@ -624,13 +725,40 @@ mod tests {
     }
 
     #[test]
-    fn failure_reason_finds_last_error() {
-        let log = "2026-10-03 OpenVPN 2.6.14\n2026-10-03 Options error: Unrecognized option\n2026-10-03 Use --help for more information.\n";
+    fn failure_reason_skips_generic_lines() {
+        let log = "2026-10-03 01:10:39 OpenVPN 2.6.14\n2026-10-03 01:10:39 Options error: Unrecognized option\n2026-10-03 01:10:39 Use --help for more information.\n";
         assert_eq!(
             failure_reason(log).unwrap(),
-            "2026-10-03 Options error: Unrecognized option"
+            "Options error: Unrecognized option"
         );
-        assert!(failure_reason("all good\n").is_none());
+        let log = "2026-10-02 20:08:46 [veyl-server] Peer Connection Initiated with [AF_INET]1.2.3.4:1194\n2026-10-02 20:08:47 There are no TAP-Windows, Wintun or ovpn-dco adapters on this system.\n2026-10-02 20:08:47 Exiting due to fatal error\n";
+        assert_eq!(
+            failure_reason(log).unwrap(),
+            "There are no TAP-Windows, Wintun or ovpn-dco adapters on this system."
+        );
+        let log = "2026-10-02 20:08:46 Peer Connection Initiated\n2026-10-02 20:08:47 Exiting due to fatal error\n";
+        assert_eq!(failure_reason(log).unwrap(), "Peer Connection Initiated");
+        assert!(failure_reason("").is_none());
+    }
+
+    #[test]
+    fn adapter_detection_and_args() {
+        let list = "{6B1A6A3A-0000-4000-8000-000000000001}\tOpenVPN Data Channel Offload\r\n{6B1A6A3A-0000-4000-8000-000000000002}\tVeyl\r\n";
+        assert!(adapter_listed(list, "Veyl"));
+        assert!(!adapter_listed("{x}\tOpenVPN Wintun\n", "Veyl"));
+        let a = openvpn_args(
+            Path::new("a.ovpn"),
+            1,
+            Path::new("pw"),
+            Path::new("l"),
+            Some("ovpn-dco"),
+        );
+        assert!(a.ends_with(&[
+            "--dev-node".to_string(),
+            "Veyl".to_string(),
+            "--windows-driver".to_string(),
+            "ovpn-dco".to_string()
+        ]));
     }
 
     #[test]
