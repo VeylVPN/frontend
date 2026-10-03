@@ -1,13 +1,37 @@
+mod server;
+
 use serde::Serialize;
+use serde_json::{json, Value};
+use server::{Failure, Token};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{Manager, RunEvent, State, WindowEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WindowEvent, Wry};
 use veyl_core::{api, keys, store, tunnel, DeviceList, Profile};
+
+struct Tray {
+    icon: TrayIcon<Wry>,
+    status: MenuItem<Wry>,
+    toggle: MenuItem<Wry>,
+    mini: MenuItem<Wry>,
+}
 
 #[derive(Default)]
 struct App {
     profile: Mutex<Option<Profile>>,
+    token: Mutex<Option<Token>>,
+    tray: Mutex<Option<Tray>>,
+    close_to_tray: AtomicBool,
+    mini: AtomicBool,
+    mini_auto: AtomicBool,
 }
+
+const MINI_WIDTH: f64 = 380.0;
+const MINI_HEIGHT: f64 = 204.0;
+const MINI_MARGIN: f64 = 12.0;
+const MINI_PAGES: [&str; 4] = ["home", "server", "devices", "settings"];
 
 #[derive(Serialize)]
 struct PublicProfile {
@@ -235,6 +259,13 @@ fn window_control(window: tauri::Window, action: String) {
         "min" => {
             let _ = window.minimize();
         }
+        "max" => {
+            if window.is_maximized().unwrap_or(false) {
+                let _ = window.unmaximize();
+            } else {
+                let _ = window.maximize();
+            }
+        }
         "close" => {
             let _ = window.close();
         }
@@ -242,16 +273,382 @@ fn window_control(window: tauri::Window, action: String) {
     }
 }
 
+async fn background<T, F>(f: F) -> Result<T, Failure>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Failure> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| Failure::local(e.to_string()))?
+}
+
+fn signed_in(app: &tauri::AppHandle, state: &State<'_, App>) -> Result<Profile, Failure> {
+    current(app, state).map_err(|e| Failure::new("NOT_SIGNED_IN", &e, 0))
+}
+
+fn with_token<F>(app: &tauri::AppHandle, state: &State<'_, App>, call: F) -> Result<Value, Failure>
+where
+    F: Fn(&str, &str) -> Result<Value, Failure>,
+{
+    let p = signed_in(app, state)?;
+    let mut cache = state.token.lock().unwrap();
+    server::authorized(&mut cache, &p.server, &p.account, &p.password, |t| {
+        call(&p.server, t)
+    })
+}
+
+#[tauri::command]
+async fn server_info(
+    app: tauri::AppHandle,
+    state: State<'_, App>,
+    server: Option<String>,
+) -> Result<Value, Failure> {
+    let target = match server {
+        Some(s) => s,
+        None => signed_in(&app, &state)?.server,
+    };
+    background(move || server::info(&target)).await
+}
+
+#[tauri::command]
+async fn redeem_invite(
+    server: String,
+    invite: String,
+    password: String,
+) -> Result<String, Failure> {
+    background(move || server::redeem(&server, &invite, &password)).await
+}
+
+#[tauri::command]
+async fn revoke_with_credentials(
+    server: String,
+    account: String,
+    password: String,
+    id: String,
+) -> Result<(), Failure> {
+    server::check_device_id(&id)?;
+    background(move || api::revoke(&server, &account, &password, &id).map_err(Failure::local)).await
+}
+
+#[tauri::command]
+async fn account_info(app: tauri::AppHandle) -> Result<Value, Failure> {
+    let handle = app.clone();
+    background(move || {
+        let state = handle.state::<App>();
+        with_token(&handle, &state, |s, t| {
+            server::send("GET", s, "/v1/me", Some(t), None)
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_dns_blocking(
+    app: tauri::AppHandle,
+    categories: Vec<String>,
+) -> Result<Value, Failure> {
+    if categories.len() > 16 || categories.iter().any(|c| c.len() > 32) {
+        return Err(Failure::new(
+            "INVALID_DNS_CATEGORY",
+            "unknown dns blocking category",
+            400,
+        ));
+    }
+    let handle = app.clone();
+    background(move || {
+        let state = handle.state::<App>();
+        with_token(&handle, &state, |s, t| {
+            server::send(
+                "PUT",
+                s,
+                "/v1/me/dns",
+                Some(t),
+                Some(json!({ "blocking": categories })),
+            )
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reset_dns_blocking(app: tauri::AppHandle) -> Result<Value, Failure> {
+    let handle = app.clone();
+    background(move || {
+        let state = handle.state::<App>();
+        with_token(&handle, &state, |s, t| {
+            server::send("DELETE", s, "/v1/me/dns", Some(t), None)
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn rename_device(app: tauri::AppHandle, id: String, name: String) -> Result<Value, Failure> {
+    server::check_device_id(&id)?;
+    let handle = app.clone();
+    background(move || {
+        let state = handle.state::<App>();
+        let path = format!("/v1/me/devices/{id}");
+        with_token(&handle, &state, |s, t| {
+            server::send("PATCH", s, &path, Some(t), Some(json!({ "name": name })))
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_account(app: tauri::AppHandle, password: String) -> Result<(), Failure> {
+    let handle = app.clone();
+    background(move || {
+        let state = handle.state::<App>();
+        with_token(&handle, &state, |s, t| {
+            server::send(
+                "DELETE",
+                s,
+                "/v1/me",
+                Some(t),
+                Some(json!({ "password": password })),
+            )
+        })?;
+        tunnel::disconnect(&tunnel_dir(&handle));
+        store::clear(&data_dir(&handle));
+        *state.profile.lock().unwrap() = None;
+        *state.token.lock().unwrap() = None;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+fn openvpn_present() -> bool {
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".into());
+    PathBuf::from(pf)
+        .join("OpenVPN")
+        .join("bin")
+        .join("openvpn.exe")
+        .exists()
+}
+
+#[tauri::command]
+fn set_close_to_tray(state: State<App>, enabled: bool) {
+    state.close_to_tray.store(enabled, Ordering::Relaxed);
+}
+
+fn clip(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+#[tauri::command]
+fn tray_status(state: State<App>, status: String, action: String, enabled: bool) {
+    if let Some(tray) = state.tray.lock().unwrap().as_ref() {
+        let status = clip(&status, 64);
+        let _ = tray.status.set_text(&status);
+        let _ = tray.toggle.set_text(clip(&action, 32));
+        let _ = tray.toggle.set_enabled(enabled);
+        let _ = tray.icon.set_tooltip(Some(format!("VeylVPN - {status}")));
+    }
+}
+
+#[tauri::command]
+fn set_mini_player(app: tauri::AppHandle, state: State<App>, enabled: bool) {
+    state.mini.store(enabled, Ordering::Relaxed);
+    if let Some(tray) = state.tray.lock().unwrap().as_ref() {
+        let _ = tray.mini.set_enabled(enabled);
+    }
+    if !enabled {
+        hide_mini(&app);
+    }
+}
+
+#[tauri::command]
+fn mini_hide(app: tauri::AppHandle) {
+    hide_mini(&app);
+}
+
+#[tauri::command]
+fn mini_open(app: tauri::AppHandle, page: String) {
+    if MINI_PAGES.contains(&page.as_str()) {
+        let _ = app.emit_to(
+            "main",
+            "mini-request",
+            json!({ "kind": "open", "page": page }),
+        );
+    }
+    hide_mini(&app);
+    show_main(&app);
+}
+
+fn place_mini(
+    app: &tauri::AppHandle,
+    mini: &tauri::WebviewWindow,
+    anchor: Option<PhysicalPosition<f64>>,
+) {
+    let monitor = anchor
+        .and_then(|point| app.monitor_from_point(point.x, point.y).ok().flatten())
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|main| main.current_monitor().ok().flatten())
+        })
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let width = (MINI_WIDTH * scale).round() as i32;
+    let height = (MINI_HEIGHT * scale).round() as i32;
+    let margin = (MINI_MARGIN * scale).round() as i32;
+    let area = monitor.work_area();
+    let x = area.position.x + area.size.width as i32 - width - margin;
+    let y = area.position.y + area.size.height as i32 - height - margin;
+    let _ = mini.set_position(PhysicalPosition::new(x, y));
+    let _ = mini.set_size(PhysicalSize::new(width as u32, height as u32));
+}
+
+fn show_mini(app: &tauri::AppHandle, auto: bool, anchor: Option<PhysicalPosition<f64>>) {
+    let Some(mini) = app.get_webview_window("mini") else {
+        return;
+    };
+    app.state::<App>().mini_auto.store(auto, Ordering::Relaxed);
+    place_mini(app, &mini, anchor);
+    let _ = mini.show();
+    if !auto {
+        let _ = mini.set_focus();
+    }
+    let _ = app.emit_to("mini", "mini-shown", ());
+}
+
+fn hide_mini(app: &tauri::AppHandle) {
+    app.state::<App>().mini_auto.store(false, Ordering::Relaxed);
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.hide();
+    }
+}
+
+fn mini_visible(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window("mini")
+        .and_then(|mini| mini.is_visible().ok())
+        .unwrap_or(false)
+}
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<Tray> {
+    let status = MenuItem::with_id(app, "status", "Not connected", false, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "Connect", false, None::<&str>)?;
+    let mini = MenuItem::with_id(app, "mini", "Mini player", false, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open VeylVPN", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit VeylVPN", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status,
+            &PredefinedMenuItem::separator(app)?,
+            &toggle,
+            &mini,
+            &open,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let mut builder = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .tooltip("VeylVPN")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "toggle" => {
+                let _ = app.emit_to("main", "tray-toggle", ());
+            }
+            "mini" => show_mini(app, false, None),
+            "open" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                position,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if !app.state::<App>().mini.load(Ordering::Relaxed) {
+                    show_main(app);
+                } else if mini_visible(app) {
+                    hide_mini(app);
+                } else {
+                    show_mini(app, false, Some(position));
+                }
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    let icon = builder.build(app)?;
+    Ok(Tray {
+        icon,
+        status,
+        toggle,
+        mini,
+    })
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_main(app)
+        }))
+        .plugin(tauri_plugin_opener::init())
         .manage(App::default())
         .setup(|app| {
             tunnel::cleanup(&tunnel_dir(app.handle()));
+            if let Ok(tray) = build_tray(app) {
+                *app.state::<App>().tray.lock().unwrap() = Some(tray);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                tunnel::cleanup(&tunnel_dir(window.app_handle()));
+            let app = window.app_handle();
+            let state = window.state::<App>();
+            if window.label() == "mini" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    hide_mini(app);
+                }
+                return;
+            }
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if state.close_to_tray.load(Ordering::Relaxed) {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        return;
+                    }
+                    tunnel::cleanup(&tunnel_dir(app));
+                    if let Some(mini) = app.get_webview_window("mini") {
+                        let _ = mini.destroy();
+                    }
+                }
+                WindowEvent::Resized(_) => {
+                    if window.is_minimized().unwrap_or(false) {
+                        if state.mini.load(Ordering::Relaxed) && !mini_visible(app) {
+                            show_mini(app, true, None);
+                        }
+                    } else if state.mini_auto.load(Ordering::Relaxed) {
+                        hide_mini(app);
+                    }
+                }
+                WindowEvent::Focused(true) if state.mini_auto.load(Ordering::Relaxed) => {
+                    hide_mini(app);
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -267,7 +664,21 @@ pub fn run() {
             disconnect,
             status,
             sign_out,
-            window_control
+            window_control,
+            server_info,
+            redeem_invite,
+            revoke_with_credentials,
+            account_info,
+            set_dns_blocking,
+            reset_dns_blocking,
+            rename_device,
+            delete_account,
+            openvpn_present,
+            set_close_to_tray,
+            tray_status,
+            set_mini_player,
+            mini_hide,
+            mini_open
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Veyl");

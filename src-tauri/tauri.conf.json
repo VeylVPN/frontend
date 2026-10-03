@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "net.veyl.client",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,19 +14,36 @@
     "windows": [
       {
         "label": "main",
-        "title": "Veyl",
-        "width": 400,
-        "height": 760,
-        "minWidth": 360,
-        "minHeight": 640,
+        "title": "VeylVPN",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 600,
         "decorations": false,
         "resizable": true,
         "center": true,
-        "backgroundColor": "#0b0b0c"
+        "backgroundColor": "#05050a"
+      },
+      {
+        "label": "mini",
+        "title": "VeylVPN mini player",
+        "url": "mini.html",
+        "width": 380,
+        "height": 204,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": true,
+        "backgroundColor": "#060818"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://stat.ripe.net"
     }
   },
   "bundle": {
