@@ -21,9 +21,9 @@ const PASSWORD_FILE: &str = "veyl.mgmt";
 const LOG_FILE: &str = "veyl.log";
 const ADAPTER: &str = "Veyl";
 const DRIVERS: [(&str, &str); 3] = [
-    ("ovpn-dco", "ovpn-dco"),
     ("wintun", "wintun"),
     ("root\\tap0901", "tap-windows6"),
+    ("ovpn-dco", "ovpn-dco"),
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -102,12 +102,16 @@ fn prioritize_adapter() {
 
 fn ensure_adapter() -> Option<&'static str> {
     let tapctl = openvpn_bin("tapctl.exe");
-    for (hwid, driver) in DRIVERS {
-        if let Some(list) = run(&tapctl, &strings(&["list", "--hwid", hwid])) {
-            if adapter_listed(&list, ADAPTER) {
-                return Some(driver);
-            }
+    let existing = DRIVERS.iter().position(|(hwid, _)| {
+        run(&tapctl, &strings(&["list", "--hwid", hwid]))
+            .is_some_and(|list| adapter_listed(&list, ADAPTER))
+    });
+    match existing {
+        Some(0) => return Some(DRIVERS[0].1),
+        Some(_) => {
+            let _ = run(&tapctl, &strings(&["delete", ADAPTER]));
         }
+        None => {}
     }
     for (hwid, driver) in DRIVERS {
         if run(
@@ -200,8 +204,44 @@ pub fn signature_script(path: &str) -> String {
     )
 }
 
-pub fn kill_switch_enable_commands(openvpn: &str) -> Vec<Vec<String>> {
+pub fn remote_ips(ovpn: &str) -> Vec<String> {
+    let mut ips: Vec<String> = Vec::new();
+    for line in ovpn.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && parts[0] == "remote" && parts[1].parse::<IpAddr>().is_ok() {
+            let ip = parts[1].to_string();
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+    }
+    ips
+}
+
+pub fn kill_switch_enable_commands(openvpn: &str, servers: &[String]) -> Vec<Vec<String>> {
     let name = format!("name={RULE}");
+    let mut cmds = kill_switch_base_commands(openvpn, &name);
+    if !servers.is_empty() {
+        cmds.insert(
+            0,
+            vec![
+                "advfirewall".into(),
+                "firewall".into(),
+                "add".into(),
+                "rule".into(),
+                name,
+                "dir=out".into(),
+                "action=allow".into(),
+                format!("remoteip={}", servers.join(",")),
+                "enable=yes".into(),
+            ],
+        );
+    }
+    cmds
+}
+
+fn kill_switch_base_commands(openvpn: &str, name: &str) -> Vec<Vec<String>> {
+    let name = name.to_string();
     vec![
         vec![
             "advfirewall".into(),
@@ -287,12 +327,15 @@ fn netsh(cmds: &[Vec<String>]) -> bool {
     ok
 }
 
-fn kill_switch_on(openvpn: &Path) -> bool {
+fn kill_switch_on(openvpn: &Path, servers: &[String]) -> bool {
     if !cfg!(windows) {
         return true;
     }
     kill_switch_off();
-    let ok = netsh(&kill_switch_enable_commands(&openvpn.display().to_string()));
+    let ok = netsh(&kill_switch_enable_commands(
+        &openvpn.display().to_string(),
+        servers,
+    ));
     if !ok {
         kill_switch_off();
     }
@@ -562,6 +605,7 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     let password = random_hex(24);
     let port = free_port()?;
     let ovpn = pin_remotes(ovpn, resolve_host)?;
+    let servers = remote_ips(&ovpn);
     fs::write(&profile, ovpn).map_err(|e| e.to_string())?;
     restrict(&profile);
     fs::write(&pwfile, &password).map_err(|e| e.to_string())?;
@@ -575,7 +619,7 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     if driver.is_some() {
         prioritize_adapter();
     }
-    if !kill_switch_on(&exe) {
+    if !kill_switch_on(&exe, &servers) {
         remove_files(dir);
         return Err("Could not enable the kill switch. Run Veyl as administrator.".into());
     }
@@ -754,7 +798,18 @@ mod tests {
 
     #[test]
     fn kill_switch_commands() {
-        let on = kill_switch_enable_commands("C:\\Program Files\\OpenVPN\\bin\\openvpn.exe");
+        let on = kill_switch_enable_commands(
+            "C:\\Program Files\\OpenVPN\\bin\\openvpn.exe",
+            &["203.0.113.7".to_string(), "2001:db8::7".to_string()],
+        );
+        assert!(on[0].contains(&"remoteip=203.0.113.7,2001:db8::7".to_string()));
+        assert!(!kill_switch_enable_commands("x", &[])
+            .iter()
+            .any(|c| c.iter().any(|a| a.starts_with("remoteip=2"))));
+        assert_eq!(
+            remote_ips("remote 203.0.113.7 1194 udp\nremote 203.0.113.7 443 tcp-client\nremote host.example 1 udp\n"),
+            vec!["203.0.113.7".to_string()]
+        );
         assert!(on.iter().all(|c| c[0] == "advfirewall"));
         assert!(on.iter().any(
             |c| c.contains(&"program=C:\\Program Files\\OpenVPN\\bin\\openvpn.exe".to_string())
