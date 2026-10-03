@@ -271,6 +271,18 @@ fn kill_switch_base_commands(openvpn: &str, name: &str) -> Vec<Vec<String>> {
             "add".into(),
             "rule".into(),
             name.clone(),
+            "dir=in".into(),
+            "action=allow".into(),
+            "protocol=udp".into(),
+            format!("localip={TUNNEL_RANGES}"),
+            "enable=yes".into(),
+        ],
+        vec![
+            "advfirewall".into(),
+            "firewall".into(),
+            "add".into(),
+            "rule".into(),
+            name.clone(),
             "dir=out".into(),
             "action=allow".into(),
             "remoteip=127.0.0.1".into(),
@@ -817,6 +829,15 @@ mod tests {
         assert!(on.iter().any(|c| c.contains(
             &"localip=10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89::/64".to_string()
         )));
+        let inbound: Vec<&Vec<String>> = on
+            .iter()
+            .filter(|c| c.contains(&"dir=in".to_string()))
+            .collect();
+        assert_eq!(inbound.len(), 1);
+        assert!(inbound[0].contains(&"protocol=udp".to_string()));
+        assert!(inbound[0].contains(
+            &"localip=10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89::/64".to_string()
+        ));
         assert!(!on.iter().any(|c| c.contains(&"delete".to_string())));
         assert!(on
             .last()
