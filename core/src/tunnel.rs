@@ -15,6 +15,7 @@ const MSI_URL: &str =
 const MSI_SHA256: &str = "1e1bb9a712990d1b2b961de7e8df3384964e4fb6f6776a100840f0d9a82ed507";
 const SIGNER: &str = "OpenVPN";
 const RULE: &str = "VeylKillSwitch";
+const TUNNEL_RANGES: &str = "10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89::/64";
 const PROFILE_FILE: &str = "veyl.ovpn";
 const PASSWORD_FILE: &str = "veyl.mgmt";
 
@@ -141,7 +142,6 @@ pub fn signature_script(path: &str) -> String {
 pub fn kill_switch_enable_commands(openvpn: &str) -> Vec<Vec<String>> {
     let name = format!("name={RULE}");
     vec![
-        strings(&["advfirewall", "firewall", "delete", "rule", &name]),
         vec![
             "advfirewall".into(),
             "firewall".into(),
@@ -161,7 +161,7 @@ pub fn kill_switch_enable_commands(openvpn: &str) -> Vec<Vec<String>> {
             name.clone(),
             "dir=out".into(),
             "action=allow".into(),
-            "localip=10.8.0.0/24".into(),
+            format!("localip={TUNNEL_RANGES}"),
             "enable=yes".into(),
         ],
         vec![
@@ -230,6 +230,7 @@ fn kill_switch_on(openvpn: &Path) -> bool {
     if !cfg!(windows) {
         return true;
     }
+    kill_switch_off();
     let ok = netsh(&kill_switch_enable_commands(&openvpn.display().to_string()));
     if !ok {
         kill_switch_off();
@@ -513,9 +514,10 @@ mod tests {
         assert!(on.iter().any(
             |c| c.contains(&"program=C:\\Program Files\\OpenVPN\\bin\\openvpn.exe".to_string())
         ));
-        assert!(on
-            .iter()
-            .any(|c| c.contains(&"localip=10.8.0.0/24".to_string())));
+        assert!(on.iter().any(|c| c.contains(
+            &"localip=10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89::/64".to_string()
+        )));
+        assert!(!on.iter().any(|c| c.contains(&"delete".to_string())));
         assert!(on
             .last()
             .unwrap()
