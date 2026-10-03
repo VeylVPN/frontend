@@ -3,7 +3,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -18,6 +18,7 @@ const RULE: &str = "VeylKillSwitch";
 const TUNNEL_RANGES: &str = "10.8.0.0/24,10.9.0.0/24,fd88:88:88::/64,fd88:88:89::/64";
 const PROFILE_FILE: &str = "veyl.ovpn";
 const PASSWORD_FILE: &str = "veyl.mgmt";
+const LOG_FILE: &str = "veyl.log";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -281,7 +282,7 @@ pub fn parse_load_stats(out: &str) -> (u64, u64) {
     (rx, tx)
 }
 
-pub fn openvpn_args(profile: &Path, port: u16, pwfile: &Path) -> Vec<String> {
+pub fn openvpn_args(profile: &Path, port: u16, pwfile: &Path, log: &Path) -> Vec<String> {
     vec![
         "--config".into(),
         profile.display().to_string(),
@@ -289,9 +290,59 @@ pub fn openvpn_args(profile: &Path, port: u16, pwfile: &Path) -> Vec<String> {
         "127.0.0.1".into(),
         port.to_string(),
         pwfile.display().to_string(),
-        "--management-query-passwords".into(),
-        "no".into(),
+        "--log".into(),
+        log.display().to_string(),
     ]
+}
+
+pub fn pin_remotes<F>(ovpn: &str, resolve: F) -> Result<String, String>
+where
+    F: Fn(&str, u16) -> Option<IpAddr>,
+{
+    let mut out = String::with_capacity(ovpn.len());
+    for line in ovpn.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[0] == "remote" && parts[1].parse::<IpAddr>().is_err() {
+            let port = parts[2]
+                .parse::<u16>()
+                .map_err(|_| "Invalid profile from server".to_string())?;
+            let ip = resolve(parts[1], port).ok_or_else(|| {
+                format!(
+                    "Could not connect. The server address {} could not be found. Check your internet connection.",
+                    parts[1]
+                )
+            })?;
+            let mut fields = vec!["remote".to_string(), ip.to_string()];
+            fields.extend(parts[2..].iter().map(|p| p.to_string()));
+            out.push_str(&fields.join(" "));
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn resolve_host(host: &str, port: u16) -> Option<IpAddr> {
+    let addrs: Vec<IpAddr> = (host, port)
+        .to_socket_addrs()
+        .ok()?
+        .map(|a| a.ip())
+        .collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| addrs.first())
+        .copied()
+}
+
+pub fn failure_reason(log: &str) -> Option<String> {
+    let line = log.lines().rev().map(str::trim).find(|l| {
+        let l = l.to_ascii_lowercase();
+        l.contains("error") || l.contains("fatal") || l.contains("failed")
+    })?;
+    let text: String = line.chars().take(240).collect();
+    Some(text)
 }
 
 fn random_hex(bytes: usize) -> String {
@@ -321,6 +372,7 @@ fn restrict(path: &Path) {
 fn remove_files(dir: &Path) {
     let _ = fs::remove_file(dir.join(PROFILE_FILE));
     let _ = fs::remove_file(dir.join(PASSWORD_FILE));
+    let _ = fs::remove_file(dir.join(LOG_FILE));
 }
 
 fn manage(port: u16, password: &str, commands: &[&str]) -> Option<Vec<String>> {
@@ -386,8 +438,10 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let profile = dir.join(PROFILE_FILE);
     let pwfile = dir.join(PASSWORD_FILE);
+    let log = dir.join(LOG_FILE);
     let password = random_hex(24);
     let port = free_port()?;
+    let ovpn = pin_remotes(ovpn, resolve_host)?;
     fs::write(&profile, ovpn).map_err(|e| e.to_string())?;
     restrict(&profile);
     fs::write(&pwfile, &password).map_err(|e| e.to_string())?;
@@ -398,7 +452,7 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
         return Err("Could not enable the kill switch. Run Veyl as administrator.".into());
     }
     let child = command(&exe)
-        .args(openvpn_args(&profile, port, &pwfile))
+        .args(openvpn_args(&profile, port, &pwfile, &log))
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -428,8 +482,14 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
             }
         };
         if exited {
+            let reason = fs::read_to_string(&log)
+                .ok()
+                .and_then(|l| failure_reason(&l));
             disconnect(dir);
-            return Err("Could not connect. Run Veyl as administrator.".into());
+            return Err(match reason {
+                Some(r) => format!("Could not connect. OpenVPN said: {r}"),
+                None => "Could not connect. OpenVPN stopped before the tunnel was ready.".into(),
+            });
         }
         if let Some(s) = poll(port, &password) {
             if s.state == State::Connected {
@@ -533,7 +593,7 @@ mod tests {
 
     #[test]
     fn openvpn_command_line() {
-        let a = openvpn_args(Path::new("a.ovpn"), 4242, Path::new("pw"));
+        let a = openvpn_args(Path::new("a.ovpn"), 4242, Path::new("pw"), Path::new("l"));
         assert_eq!(
             a,
             vec![
@@ -543,10 +603,34 @@ mod tests {
                 "127.0.0.1",
                 "4242",
                 "pw",
-                "--management-query-passwords",
-                "no"
+                "--log",
+                "l"
             ]
         );
+    }
+
+    #[test]
+    fn remotes_pinned_to_ip() {
+        let p = "client\nremote vpn.example.com 1194 udp\nremote vpn.example.com 443 tcp-client\nremote 192.0.2.9 993 tcp-client\nverb 1\n";
+        let ip: IpAddr = "203.0.113.7".parse().unwrap();
+        let out = pin_remotes(p, |h, _| (h == "vpn.example.com").then_some(ip)).unwrap();
+        assert_eq!(
+            out,
+            "client\nremote 203.0.113.7 1194 udp\nremote 203.0.113.7 443 tcp-client\nremote 192.0.2.9 993 tcp-client\nverb 1\n"
+        );
+        let err = pin_remotes(p, |_, _| None).unwrap_err();
+        assert!(err.starts_with("Could not connect."));
+        assert!(err.contains("vpn.example.com"));
+    }
+
+    #[test]
+    fn failure_reason_finds_last_error() {
+        let log = "2026-10-03 OpenVPN 2.6.14\n2026-10-03 Options error: Unrecognized option\n2026-10-03 Use --help for more information.\n";
+        assert_eq!(
+            failure_reason(log).unwrap(),
+            "2026-10-03 Options error: Unrecognized option"
+        );
+        assert!(failure_reason("all good\n").is_none());
     }
 
     #[test]
