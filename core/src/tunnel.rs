@@ -587,7 +587,10 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn();
     let child = match child {
-        Ok(c) => c,
+        Ok(c) => {
+            bind_to_app(&c);
+            c
+        }
         Err(_) => {
             kill_switch_off();
             remove_files(dir);
@@ -629,6 +632,59 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn stray_script(profile: &str) -> String {
+    format!(
+        "$p = '{}'; Get-CimInstance Win32_Process -Filter \"Name='openvpn.exe'\" | Where-Object {{ $_.CommandLine -and $_.CommandLine.Contains($p) }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+        profile.replace('\'', "''")
+    )
+}
+
+fn kill_strays(dir: &Path) {
+    if !cfg!(windows) {
+        return;
+    }
+    let script = stray_script(&dir.join(PROFILE_FILE).display().to_string());
+    let _ = run(
+        &PathBuf::from("powershell.exe"),
+        &strings(&["-NoProfile", "-NonInteractive", "-Command", &script]),
+    );
+}
+
+#[cfg(windows)]
+fn bind_to_app(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    static JOB: OnceLock<usize> = OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return 0;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        job as usize
+    });
+    if job != 0 {
+        unsafe {
+            AssignProcessToJobObject(job as _, child.as_raw_handle() as _);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn bind_to_app(_child: &Child) {}
+
 pub fn disconnect(dir: &Path) {
     let session = SESSION.lock().unwrap().take();
     if let Some(mut s) = session {
@@ -636,6 +692,7 @@ pub fn disconnect(dir: &Path) {
         let _ = s.child.wait();
         remove_files(&s.dir);
     }
+    kill_strays(dir);
     remove_files(dir);
     kill_switch_off();
 }
@@ -779,6 +836,14 @@ mod tests {
         let log = "2026-10-02 20:08:46 Peer Connection Initiated\n2026-10-02 20:08:47 Exiting due to fatal error\n";
         assert_eq!(failure_reason(log).unwrap(), "Peer Connection Initiated");
         assert!(failure_reason("").is_none());
+    }
+
+    #[test]
+    fn stray_script_targets_only_veyl_profile() {
+        let s = stray_script("C:\\Users\\o'n\\AppData\\veyl.ovpn");
+        assert!(s.contains("Name='openvpn.exe'"));
+        assert!(s.contains("$p = 'C:\\Users\\o''n\\AppData\\veyl.ovpn'"));
+        assert!(s.contains("CommandLine.Contains($p)"));
     }
 
     #[test]
