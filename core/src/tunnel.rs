@@ -77,6 +77,29 @@ pub fn adapter_listed(list: &str, name: &str) -> bool {
     })
 }
 
+pub fn adapter_metric_commands() -> Vec<Vec<String>> {
+    ["ipv4", "ipv6"]
+        .iter()
+        .map(|family| {
+            strings(&[
+                "interface",
+                family,
+                "set",
+                "interface",
+                &format!("interface={ADAPTER}"),
+                "metric=1",
+            ])
+        })
+        .collect()
+}
+
+fn prioritize_adapter() {
+    let exe = PathBuf::from("netsh.exe");
+    for c in adapter_metric_commands() {
+        let _ = run(&exe, &c);
+    }
+}
+
 fn ensure_adapter() -> Option<&'static str> {
     let tapctl = openvpn_bin("tapctl.exe");
     for (hwid, driver) in DRIVERS {
@@ -335,6 +358,13 @@ pub fn openvpn_args(
         pwfile.display().to_string(),
         "--log".into(),
         log.display().to_string(),
+        "--route".into(),
+        "0.0.0.0".into(),
+        "0.0.0.0".into(),
+        "vpn_gateway".into(),
+        "1".into(),
+        "--route-ipv6".into(),
+        "::/0".into(),
     ];
     if let Some(d) = driver {
         a.extend([
@@ -542,6 +572,9 @@ pub fn connect(dir: &Path, ovpn: &str) -> Result<(), String> {
     } else {
         None
     };
+    if driver.is_some() {
+        prioritize_adapter();
+    }
     if !kill_switch_on(&exe) {
         remove_files(dir);
         return Err("Could not enable the kill switch. Run Veyl as administrator.".into());
@@ -705,7 +738,14 @@ mod tests {
                 "4242",
                 "pw",
                 "--log",
-                "l"
+                "l",
+                "--route",
+                "0.0.0.0",
+                "0.0.0.0",
+                "vpn_gateway",
+                "1",
+                "--route-ipv6",
+                "::/0"
             ]
         );
     }
@@ -739,6 +779,24 @@ mod tests {
         let log = "2026-10-02 20:08:46 Peer Connection Initiated\n2026-10-02 20:08:47 Exiting due to fatal error\n";
         assert_eq!(failure_reason(log).unwrap(), "Peer Connection Initiated");
         assert!(failure_reason("").is_none());
+    }
+
+    #[test]
+    fn adapter_gets_top_metric() {
+        let c = adapter_metric_commands();
+        assert_eq!(c.len(), 2);
+        assert_eq!(
+            c[0],
+            vec![
+                "interface",
+                "ipv4",
+                "set",
+                "interface",
+                "interface=Veyl",
+                "metric=1"
+            ]
+        );
+        assert_eq!(c[1][1], "ipv6");
     }
 
     #[test]
